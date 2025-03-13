@@ -1,0 +1,10 @@
+[package]
+name = "soirc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+soir = { path = "../soir" }
+color-eyre = "0.6.3"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = "0.1.41"

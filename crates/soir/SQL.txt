@@ -1,0 +1,284 @@
+Supported SQL statements:
+
+TRUNCATE
+SELECT
+INSERT
+UPDATE
+DELETE
+
+START TRANSACTION
+COMMIT
+ROLLBACK
+SAVEPOINT
+RELEASE
+
+=
+
+SQLITE
+    literal-value :=
+        | <numeric-literal> | <string-literal> | <blob-literal>
+        | NULL | TRUE | FALSE | CURRENT_TIME | CURRENT_DATE | CURRENT_TIMESTAMP
+    function-arguments := [ * | [ DISTINCT ] <expr>,+ [ ORDER BY <ordering-term>,+ ]
+    filter-clause := FILTER '(' WHERE <expr> ')'
+    raise-function := RAISE '(' ( IGNORE | ( ROLLBACK | ABORT | FAIL ) , <expr> ) ')'
+    type-name := <name>+ [ '(' <signed-number> [ , <signed-number> ] ')' ]
+    over-clause :=
+        OVER (
+            | <window-name>
+            | '(' [ <base-window-name> ] [ PARTITION BY <expr>,+ ]
+                [ ORDER BY <ordering-term>,+ ] [ <frame-spec> ] ')' )
+    expr :=
+        | <literal-value>
+        | <bind-parameter>
+        | [ [ <schema-name> . ] <table-name> . ] <column-name>
+        | <unary-op> <expr>
+        | <expr> <bin-op> <expr>
+        | <function-name> '(' <function-arguments> ')' [ <filter-clause> ] [ <over-clause> ]
+        | '(' <expr>,+ ')'
+        | CAST '(' <expr> AS <type-name> ')'
+        | <expr> COLLATE <collation-name>
+        | <expr> [ NOT ] (
+            | LIKE <expr> [ ESCAPE <expr> ]
+            | ( GLOB | REGEXP | MATCH ) <expr> )
+        | <expr> ( ISNULL | NOTNULL | NOT NULL )
+        | <expr> IS [ NOT ] [ DISTINCT FROM ] <expr>
+        | <expr> [ NOT ] BETWEEN <expr> AND <expr>
+        | <expr> [ NOT ] IN (
+            | '(' [ <select-stmt> | <expr>,+ ] ')'
+            | [ <schema-name> . ] ( <table-name> | <table-function> '(' [ <expr>,+ ] ')' ) )
+        | [ [ NOT ] EXISTS ] '(' <select-stmt> ')'
+        | CASE [ <expr> ] ( WHEN <expr> THEN <expr> )+ [ ELSE <expr> ] END
+        | <raise-function>
+    column-expression := <expr> [ [ AS ] <column-alias> ]
+    qualified-table-name :=
+        [ <schema-name> . ] <table-name> [ AS <alias> ]
+        [ INDEXED BY <index-name> | NOT INDEXED ]
+    common-table-expression :=
+        <table-name> [ '(' <column-name>,+ ')' ]
+        AS [ [ NOT ] MATERIALIZED ] '(' <select-stmt> ')'
+    returning-clause :=
+        RETURNING ( * | <column-expression>,+ )
+    indexed-column :=
+        ( <column-name> | <expr> ) [ COLLATE <collation-name> ] [ ASC | DESC ]
+    conflict-target :=
+        [ '(' <indexed-column>,+ ')' [ WHERE <expr> ]
+    column-name-list :=
+        '(' <column-name>,+ ')'
+    upsert-clause :=
+        ( ON CONFLICT <conflict-target> DO
+            ( NOTHING
+                | UPDATE SET
+                    [ ( ( <column-name> | <column-name-list> ) '=' <expr> ),+ ]
+                    [ WHERE <expr> ] )
+            )+
+    table-or-subquery :=
+        [ <schema-name> . ] <table-name> [ [ AS ] <table-alias> ]
+            [ INDEXED BY <index-name> | NOT INDEXED ]
+        | [ <schema-name> . ] <table-function-name> '(' <expr>,+ ')' [ [ AS ] <table-alias> ]
+        | '(' <select-stmt> ')' [ [ AS ] <table-alias> ]
+        | '(' ( <join-clause> | <table-or-subquery>,+ ) ')'
+    join-clause :=
+        <table-or-subquery>
+            (   [ [ [ CROSS | [ NATURAL ] [ [ LEFT | RIGHT | FULL ] [ OUTER ] | INNER ] JOIN | , ]
+                <table-or-subquery>
+                [ ON <expr> | USING '(' <column-name>,+ ')' ] )*
+    result-column :=
+        <expr> [ [ AS ] <column-alias> ] | '*' | <table-name> '.*' ]
+    frame-spec :=
+        ( RANGE | ROWS | GROUPS )
+        ( CURRENT ROW
+            | ( UNBOUNDED | <expr> ) PRECEDING
+            | BETWEEN ( ( <expr> | UNBOUNDED ) PRECEDING | CURRENT ROW | <expr> FOLLOWING )
+                AND ( <expr> PRECEDING | CURRENT ROW | ( <expr> | UNBOUNDED ) FOLLOWING ) )
+        [ EXCLUDE ( NO OTHERS | CURRENT ROW | GROUP | TIES ) ]
+    window-defn :=
+        '(' [ <base-window-name> ]
+         [ PARTITION BY <expr>,+ ]
+         [ ORDER BY <ordering-term>,+ ]
+         [ <frame-spec> ] ')'
+    ordering-term :=
+        <expr> [ COLLATE <collation-name> ] [ ASC | DESC ] [ NULLS ( FIRST | LAST ) ]
+    select-core :=
+        ( SELECT [ ALL | DISTINCT ] <result-column>,+
+            [ FROM ( <join-clause> | <table-or-subquery>,+ ) ]
+            [ WHERE <expr> ]
+            [ GROUP BY <expr>,+ ] [ HAVING <expr> ]
+            [ WINDOW ( <window-name> AS <window-defn> ),+ ]
+        | VALUES ( '(' <expr>,+ ')' ),+ )
+    [ WITH [ RECURSIVE ] <common-table-expression>,+ ]
+        DELETE FROM <qualified-table-name>
+        [ WHERE <expr> ]
+        [ <returning-clause> ]
+    [ WITH [ RECURSIVE ] <common-table-expression>,+ ]
+         ( REPLACE | INSERT [ OR ( ABORT | FAIL | IGNORE | REPLACE | ROLLBACK ) ] ) INTO
+         [ <schema-name> . ] <table-name> [ AS <alias> ]
+         [ '(' <column-name>,+ ')' ]
+         ( DEFAULT VALUES
+            | <select-stmt> [ <upsert-clause> ]
+            | VALUES ( '(' <expr>,+ ')' ),+ [ <upsert-clause> ] )
+         [ <returning-clause> ]
+    [ WITH [ RECURSIVE ] <common-table-expression>,+ ]
+        UPDATE [ OR ( ABORT | FAIL | IGNORE | REPLACE | ROLLBACK ) ] <qualified-table-name>
+        SET ( ( ( <column-name> | <column-name-list> ) '=' <expr> ),+ )
+        [ FROM ( <join-clause> | <table-or-subquery>,+ ) ]
+        [ WHERE <expr> ]
+        [ <returning-clause> ]
+    [ WITH [ RECURSIVE ] <common-table-expression>,+ ]
+        <select-core> ( ( UNION [ ALL ] | INTERSECT | EXCEPT ) <select-core> )*
+        [ ORDER BY <ordering-term>,+ ]
+        [ LIMIT <expr> [ OFFSET <expr> | ',' <expr> ]
+
+MYSQL
+    TRUNCATE [ TABLE ] <name>
+    [ <with-CTE> ] DELETE [ LOW_PRIORITY ] [ QUICK ] [ IGNORE ]
+        FROM tbl_name [ [ AS ] ALIAS ]
+        [ PARTITION '(' partition_name,+ ')' ]
+        [ WHERE where_condition ]
+        [ ORDER BY ? ]
+        [ LIMIT row_count ]
+    [ <with-CTE> ] DELETE [ LOW_PRIORITY ] [ QUICK ] [ IGNORE ]
+        ( tbl_name [ '.*' ]  ),*
+        ( FROM | USING ) table_references
+        [ WHERE where_condition ]
+
+POSTGRES
+    TRUNCATE [ TABLE ] [ ONLY ] ( <name> [ * ] ),+
+        [ ( RESTART | CONTINUE ) IDENTITY ] [ CASCADE | RESTRICT ]
+    [ WITH [ RECURSIVE ] with_query ,+ ]
+        DELETE FROM [ ONLY ] table_name [ * ] [ [ AS ] alias ]
+        [ USING from_item ,+ ]
+        [ WHERE condition | WHERE CURRENT OF cursor_name ]
+        [ RETURNING ( * | output_expression [ [ AS ] output_name ] ),+ ]
+
+= TRANSACTIONS
+
+SQLITE
+    BEGIN [ DEFERRED | IMMEDIATE | EXCLUSIVE ] [ TRANSACTION ]
+    ( END | COMMIT ) [ TRANSACTION ]
+    SAVEPOINT <savepoint-name>
+    RELEASE [ SAVEPOINT ] <savepoint-name>
+    ROLLBACK [ TRANSACTION ] [ TO [ SAVEPOINT ] <savepoint-name> ]
+
+MYSQL
+    START TRANSACTION
+        [ WITH CONSISTENT SNAPSHOT ]
+        [ READ WRITE ]
+        [ READ ONLY ]
+    BEGIN [ WORK ]
+    COMMIT [ WORK ] [ AND [ NO ] CHAIN ] [ [ NO ] RELEASE ]
+    ROLLBACK [ WORK ] [ AND [ NO ] CHAIN ] [ [ NO ] RELEASE ]
+    SAVEPOINT <savepoint-name>
+    ROLLBACK [ WORK ] TO [ SAVEPOINT ] <savepoint-name>
+    RELEASE SAVEPOINT <savepoint-name>
+
+    BEGIN [ WORK ] is aliased to START TRANSACTION with no options
+    BEGIN ... END does not begin a transaction
+
+
+POSTGRES
+    transaction-mode :=
+        [ ISOLATION LEVEL ( SERIALIZABLE | REPEATABLE READ | READ COMMITTED | READ UNCOMMITTED ) ]
+        [ READ WRITE | READ ONLY ]
+        [ [ NOT ] DEFERRABLE ]
+    START TRANSACTION <transaction-mode>
+    BEGIN [ WORK | TRANSACTION ] <transaction-mode>
+    COMMIT [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
+    ROLLBACK [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
+    SAVEPOINT <savepoint-name>
+    ROLLBACK [ WORK | TRANSACTION ] TO [ SAVEPOINT ] <savepoint-name>
+    RELEASE [ SAVEPOINT ] <savepoint-name>
+
+    BEGIN:
+        [ WORK | TRANSLATION ] has no effect
+        same effect as start transaction
+    BEGIN ... END do not start a transaction
+
+SQLPARSER/AST
+    Truncate =
+        table_names: Vec<TruncateTableTarget>
+        partitions: Option<Vec<Expr>>
+        table: bool
+        only: bool                                  -- PG
+        identity: Option<TruncateIdentityOption>    -- PG
+        cascade: Option<CascadeOption>              -- PG
+        on_cluster: Option<Ident>                   -- ClickHouse
+    Query = Box<Query>
+    Query =
+        with: Option<With>
+        body: Box<SetExpr>
+        order_by: Option<OrderBy>
+        limit: Option<Expr>                         -- LIMIT ( <N> | ALL )
+        limit_by: Vec<Expr>                         -- LIMIT <N> BY <expr>, ...
+        offset: Option<Offset>                      -- OFFSET <N> [ ROW | ROWS ]
+        fetch: Option<Fetch>                        -- PG
+        locks: Vec<LockClause>                      -- ?
+        for_clause: Option<ForClause>               -- ?
+        settings: Option<Vec<Setting>>              -- ClickHouse
+        format_clause: Option<FormatClause>         -- ClickHouse
+    Insert = Insert
+    Insert =
+        or: Option<SqliteOnConflict>                -- SQLite
+        ignore: bool                                -- MySQL
+        into: bool
+        table: TableObject
+        table_alias: Option<Ident>                  -- PG
+        columns: Vec<Ident>
+        overwrite: bool                             -- Hive
+        source: Option<Box<Query>>
+        assignments: Vec<Assignment>                -- MySQL (INSERT INTO ... SET)
+        partitioned: Option<Vec<Expr>>              -- Hive
+        after_columns: Vec<Ident>                   -- (after PARTITION)
+        has_table_keyword: bool                     -- Hive
+        on: Option<OnInsert>
+        returning: Option<Vec<SelectItem>>
+        replace_into: bool                          -- MySQL
+        priority: Option<MysqlInsertPriority>       -- MySQL
+        insert_alias: Option<InsertAliases>         -- MySQL
+        settings: Option<Vec<Setting>>              -- ClickHouse
+        format_clause: Option<InputFormatClause>    -- ClickHouse
+    Delete = Delete
+    Delete =
+        tables: Vec<ObjectName>
+        from: FromTable
+        using: Option<Vec<TableWithJoins>>
+        selection: Option<Expr>
+        returning: Option<Vec<SelectItem>>
+        order_by: Vec<OrderByExpr>
+        limit: Option<Expr>
+    Update =
+        table: TableWithJoins
+        assignments: Vec<Assignment>
+        from: Option<UpdateTableFromKind>
+        selection: Option<Expr>
+        returning: Option<Vec<SelectItem>>
+        or: Option<SqliteOnConflict>                -- SQLite
+
+    TransactionAccessMode =
+        | ReadOnly
+        | ReadWrite
+    TransactionIsolationLevel =
+        | ReadUncommitted
+        | ReadCommitted
+        | RepeatableRead
+        | Serializable
+        | Snapshot
+    TransactionMode =
+        | AccessMode TransactionAccessMode
+        | IsolationLevel TransactionIsolationLevel
+    StartTransaction =
+        modes: Vec<TransactionMode>
+        begin: bool
+        transaction: Option<BeginTransactionKind>
+        modifier: Option<TransactionModifier>
+    (* Note that we do not support END as a way to commit transactions *)
+    Commit =
+        chain: bool
+        end: bool
+        modifier: Option<TransactionModifier>
+    Rollback =
+        chain: bool
+        savepoint: Option<Ident>
+    Savepoint =
+        name: Ident
+    ReleaseSavepoint =
+        name: Ident

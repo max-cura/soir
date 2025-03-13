@@ -1,0 +1,7 @@
+Runtime consists of:
+ - set of KV maps grouped into keyspaces
+
+keyspace consists of set of columns
+ - each KV $j$ has $K_j subset.eq cal(C)$, $V_j subset.eq cal(C) except K_j$ (TODO: should this be = cal(C) - K_j?)
+
+Resolve select statements

@@ -1,0 +1,12 @@
+[package]
+name = "soir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lasso = "0.7.3"
+sqlparser = { version = "0.54.0", features = ["visitor"]}
+
+eyre = "0.6.12"
+tracing = { version = "0.1.41", features = [] }
+thiserror = { version = "2.0.11" }

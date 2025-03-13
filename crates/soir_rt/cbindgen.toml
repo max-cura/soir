@@ -1,0 +1,14 @@
+language = "C"
+
+cpp_compat = false
+documentation_style = "doxy"
+documentation_length = "full"
+
+style = "both"
+usize_is_size_t = true
+
+[export]
+prefix = "SOIR_"
+
+[ptr]
+non_null_attribute = "_Nonnull"

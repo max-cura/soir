@@ -1,0 +1,9 @@
+[package]
+name = "soirc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
+maplit = "1.0.2"
+chumsky = "1.0.0-alpha.8"
