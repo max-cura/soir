@@ -1,0 +1,15 @@
+leq :: Int -> Int -> Bool ;;
+leq a b = a <= b ;;
+
+other_var = "world" ;;
+
+infix <~> leq ;;
+if
+
+main = let var = other_var in
+	 match x in
+		| Just x -> match 3 <~> 4 in
+			| True -> "woah"
+			| False -> "hi"
+		| Nothing -> var
+;;

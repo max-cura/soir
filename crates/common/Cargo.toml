@@ -1,0 +1,13 @@
+[package]
+name = "telos-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chumsky = { git = "https://github.com/zesterer/chumsky", rev = "ed0f695df586e39c93f1df28c52a2438eceddf51" }
+lasso = "0.7.3"
+la-arena = "0.3.1"
+miette = { version = "7.6.0", features = ["fancy"] }
+thiserror = "2.0.12"
+tracing = "0.1.41"
+

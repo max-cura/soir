@@ -1,0 +1,18 @@
+-- Example 1:
+-- 
+-- 	int query(int **A, int ***B) {
+-- 	  int **a0 = *A;
+-- 	  int *a1 = *a0;
+-- 	  int ***b0 = *B;
+-- 	  int **b1 = *b0;
+-- 	  int *b2 = *b1;
+-- 	  return *a1 + *b2;
+-- 	}
+
+main = 
+  let a = Data.read Index_7example k_A in -- k_A is a constant
+    let b = Data.read Index_7example k_B in -- k_B is a constant
+      let b1 = b + 5 in
+        let a1 = Data.read Index_7example a in
+          let b2 = Data.read Index_7example b1 in
+            a1 + b2

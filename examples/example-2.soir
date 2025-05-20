@@ -1,0 +1,12 @@
+-- Example 2
+-- 
+-- CREATE TABLE example ( id SERIAL INT PRIMARY KEY , birthdate DATE );
+-- CREATE INDEX bdate ON example ( birthdate );
+-- SELECT example.id FROM example
+--   WHERE example.birthday BETWEEN "1994-01-01" AND "1998-01-01";
+
+main =
+  let r = Range.new (Date.fromYMD 1994 01 01) (Date.fromYMD 1998 01 01) in
+    let p = Data.indexRange Index_5bdate r in
+      Pool.map p \row -> Table_7example.col.id row
+
