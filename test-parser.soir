@@ -13,3 +13,12 @@ main = let var = other_var in
 			| False -> "hi")
 		| Nothing -> var
 ;;
+
+Option.unwrap_or x y =
+	match x in
+		| Just x2 -> x2
+		| Nothing -> (\yy -> yy) y
+;;
+
+example v = V.field v
+;;
