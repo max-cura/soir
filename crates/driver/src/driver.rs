@@ -97,12 +97,16 @@ pub fn build(build: BuildArgs) {
         fail()
     }
 
-    tracing::debug!("tokens: {source_tokens:?}");
+    if build.emit_tokens {
+        eprintln!();
+        eprintln!("--emit-tokens");
+        eprintln!("{source_tokens:?}");
+    }
 
     let mut expr_arena = Arena::new();
     let mut ty_arena = Arena::new();
     let mut pat_arena = Arena::new();
-    let mut parse_items: Vec<(SourceId, Vec<Spanned<Item>>)> = vec![];
+    let mut parse_items: Vec<Spanned<Item>> = vec![];
     let mut parse_errors = vec![];
     for (source_id, tokens) in source_tokens {
         match telos_parser::parser::parse(
@@ -114,22 +118,38 @@ pub fn build(build: BuildArgs) {
             &mut ty_arena,
             &mut pat_arena,
         ) {
-            Ok(items) => parse_items.push((source_id, items)),
+            Ok(items) => parse_items.extend(items),
             Err(errors) => parse_errors.extend_from_slice(&errors),
         }
     }
     if !parse_errors.is_empty() {
-        let mut error_count = 0;
-        for error in parse_errors {
-            eprintln!("{:?}", miette::Report::new(error));
-            error_count += 1;
-        }
-        eprintln!("Encountered {error_count} errors.");
-        eprintln!("Compilation failed.");
-        fail()
+        dump_errors(parse_errors)
     }
 
-    // run parsing
+    if build.emit_initial_ast {
+        eprintln!();
+        eprintln!("--emit-initial-ast");
+        eprintln!("{parse_items:?}");
+    }
+
+    if let Err(errors) = crate::passes::operators::resolve_all_operators(
+        &parse_items,
+        &interner,
+        &sources,
+        &mut expr_arena,
+    ) {
+        dump_errors(errors)
+    }
+}
+
+pub fn dump_errors<E: std::error::Error + Diagnostic + Send + Sync + 'static>(errors: Vec<E>) -> ! {
+    let error_count = errors.len();
+    for error in errors {
+        eprintln!("{:?}", miette::Report::new(error));
+    }
+    eprintln!("Encountered {} errors.", error_count);
+    eprintln!("Compilation failed.");
+    fail()
 }
 
 /// Convenience method for printing a message, an error, and then exiting the current process with

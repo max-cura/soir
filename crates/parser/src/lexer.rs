@@ -16,7 +16,7 @@ use telos_common::{
     span::{Span, Spanned},
 };
 
-use crate::parser::Fixity;
+use crate::parser::{Fixity, Side};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralToken {
@@ -69,6 +69,7 @@ pub enum Token {
     In,
     Let,
     Infix(Fixity),
+    Unary(Side),
 
     // --- punctuation ---
     Eq,
@@ -119,6 +120,10 @@ impl Token {
                 Fixity::Left => write!(w, "infixl"),
                 Fixity::Right => write!(w, "infixr"),
             },
+            Token::Unary(side) => match side {
+                Side::Left => write!(w, "unaryl"),
+                Side::Right => write!(w, "unaryr"),
+            },
             Token::Eq => write!(w, "="),
             Token::Arrow => write!(w, "->"),
             Token::Colon => write!(w, ":"),
@@ -153,6 +158,8 @@ pub macro T {
     [infixl] => { $crate::lexer::Token::Infix(Fixity::Left) },
     [infixr] => { $crate::lexer::Token::Infix(Fixity::Right) },
     [infix] => { $crate::lexer::Token::Infix(Fixity::None) },
+    [unaryl] => { $crate::lexer::Token::Unary(Side::Left) },
+    [unaryr] => { $crate::lexer::Token::Unary(Side::Right) },
     [true] => { $crate::lexer::Token::Literal(LiteralToken::Bool(true)) },
     [false] => { $crate::lexer::Token::Literal(LiteralToken::Bool(false)) },
     [()] => { $crate::lexer::Token::Literal(LiteralToken::Unit) },
@@ -253,6 +260,8 @@ pub fn lexer<'s, 'r: 's>() -> impl Parser<
         .or(keyword("infixl").to(T![infixl]))
         .or(keyword("infixr").to(T![infixr]))
         .or(keyword("infix").to(T![infix]))
+        .or(keyword("unaryl").to(T![unaryl]))
+        .or(keyword("unaryr").to(T![unaryr]))
         .labelled("keyword")
         .or((unicode::ident().or(just(".")))
             .repeated()

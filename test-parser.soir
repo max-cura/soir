@@ -1,15 +1,15 @@
 leq :: Int -> Int -> Bool ;;
-leq a b = a <= b ;;
+leq a b = __builtin_leq a b ;;
 
 other_var = "world" ;;
 
-infix <~> leq ;;
-if
+infix 48 <~> leq ;;
+unaryl  12 - __builtin_negate ;;
 
 main = let var = other_var in
 	 match x in
-		| Just x -> match 3 <~> 4 in
+		| Just x -> (match -3 <~> 4 in
 			| True -> "woah"
-			| False -> "hi"
+			| False -> "hi")
 		| Nothing -> var
 ;;

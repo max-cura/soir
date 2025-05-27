@@ -36,13 +36,13 @@ pub enum Pat {
     },
 }
 /// Match arm
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pat: Spanned<Idx<Pat>>,
     pub body: Spanned<Idx<Expr>>,
 }
 /// Expression
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     /// If expression
     If {
@@ -73,8 +73,13 @@ pub enum Expr {
         func: Spanned<Idx<Expr>>,
         args: Vec<Spanned<Idx<Expr>>>,
     },
-    /// Binary operator sequence (before resolution)
-    BinOpSeq { seq: Vec<OpExpr> },
+    /// Operator sequence (before resolution)
+    OpSeq { seq: Vec<OpExpr> },
+    /// Unary operator application
+    Unary {
+        operator: Spanned<Spur>,
+        expr: Spanned<Idx<Expr>>,
+    },
     /// Binary operator application
     BinOp {
         operator: Spanned<Spur>,
@@ -85,10 +90,10 @@ pub enum Expr {
     /// Variable reference
     Var { name: Spanned<Spur> },
 }
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum OpExpr {
     Expr(Spanned<Idx<Expr>>),
-    Op(Spanned<(Spur, bool)>),
+    Op { name: Spanned<Spur>, is_quot: bool },
 }
 /// Type constructor (note that `->` is a special infix constructor `Ty -> Ty -> Ty`)
 #[derive(Debug)]
@@ -114,8 +119,15 @@ pub enum Item {
     Infix {
         operator: Spanned<Spur>,
         impl_: Spanned<Spur>,
-        precedence: u16,
+        precedence: Spanned<u16>,
         fixity: Fixity,
+    },
+    /// Unary operator declaration
+    Unary {
+        operator: Spanned<Spur>,
+        impl_: Spanned<Spur>,
+        precedence: Spanned<u16>,
+        side: Side,
     },
 }
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -130,6 +142,19 @@ impl std::fmt::Display for Fixity {
             Fixity::Left => write!(f, "left"),
             Fixity::Right => write!(f, "right"),
             Fixity::None => write!(f, "non"),
+        }
+    }
+}
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Side {
+    Left,
+    Right,
+}
+impl std::fmt::Display for Side {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Side::Left => write!(f, "left"),
+            Side::Right => write!(f, "right"),
         }
     }
 }
@@ -198,12 +223,12 @@ where
         Token::Literal(LiteralToken::Numeric { radix, digits }) = e => {
             u16::from_str_radix(&Rodeo::resolve(<SimpleState<ParserState> as Deref>::deref(e.state()).interner, &&digits), radix as u32).unwrap()
         }
-    })
+    }.labelled("precedence").map_with(Spanned::from_extra))
     .then(
         select! {
             Token::Operator(spur) => spur,
         }
-        .map_with(Spanned::from_extra),
+        .map_with(Spanned::from_extra) ,
     )
     .then(ident.clone())
     .map_with(|(((fixity, precedence), operator), impl_), e| {
@@ -218,6 +243,26 @@ where
         )
     })
     .labelled("infix declaration");
+
+    // -- unary operator item --
+    let unary_item = select! {
+        Token::Unary(side) => side
+    }.then(select! {
+            Token::Literal(LiteralToken::Numeric { radix, digits }) = e => {
+                u16::from_str_radix(&Rodeo::resolve(<SimpleState<ParserState> as Deref>::deref(e.state()).interner, &&digits), radix as u32).unwrap()
+            }
+        }.labelled("precedence").map_with(Spanned::from_extra))
+        .then(
+                select! {
+                    Token::Operator(spur) => spur,
+                                    }.map_with(Spanned::from_extra)
+            )
+            .then(ident.clone())
+            .map_with(|(((side, precedence), operator), impl_), e| {
+                    Spanned::new(Item::Unary {
+                        operator, impl_, precedence, side
+                    }, e.span())
+                });
 
     // -- general utility --
 
@@ -405,14 +450,14 @@ where
             .labelled("function application");
         // then parse binopseqs
         let binopseq = select! {
-            Token::Operator(op) = e => OpExpr::Op(Spanned::new((op, false), e.span())),
-            Token::QuotOperator(op) = e => OpExpr::Op(Spanned::new((op, true), e.span())),
+            Token::Operator(op) = e => OpExpr::Op{ name: Spanned::new(op, e.span()), is_quot: false },
+            Token::QuotOperator(op) = e => OpExpr::Op{ name: Spanned::new(op, e.span()), is_quot: true },
         }
-        .or(app.clone().map_with(Spanned::from_extra).map(OpExpr::Expr))
+        .or(Parser::map(app.clone().map_with(Spanned::from_extra), OpExpr::Expr))
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
-        .map_with(|seq, e| ParserState::alloc_expr(Expr::BinOpSeq { seq }, e))
+        .map_with(|seq, e| ParserState::alloc_expr(Expr::OpSeq { seq }, e))
         .labelled("binary operator");
 
         binopseq.or(app).or(expr_atom)
@@ -438,7 +483,10 @@ where
         .map_with(Spanned::from_extra)
         .labelled("top-level binding");
 
-    let item = infix_item.or(type_decl_item).or(binding_item);
+    let item = infix_item
+        .or(unary_item)
+        .or(type_decl_item)
+        .or(binding_item);
     let delim = just(T![;]).then(just(T![;]));
     item.recover_with(chumsky::recovery::skip_then_retry_until(
         any().and_is(delim.clone().not()).ignored(),

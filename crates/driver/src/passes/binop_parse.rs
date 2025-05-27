@@ -119,10 +119,13 @@ fn visit_exprs(
                     .iter()
                     .enumerate()
                     .filter_map(|(i, op)| match op {
-                        OpExpr::Op(Spanned { inner: op, span }) => Some((
+                        OpExpr::Op {
+                            name: Spanned { inner: name, span },
+                            is_quot,
+                        } => Some((
                             i,
                             Spanned {
-                                inner: op,
+                                inner: (*name, *is_quot),
                                 span: *span,
                             },
                         )),

@@ -40,6 +40,14 @@ impl<T, C> Spanned<T, C> {
 }
 // XXX: Span::context(), ::start(), ::end() only exists for C: Clone
 impl<T, C: Clone> Spanned<T, C> {
+    pub fn map_both<U, K: Clone, F: FnOnce(T, Span<C>) -> (U, Span<K>)>(
+        self,
+        f: F,
+    ) -> Spanned<U, K> {
+        let Self { inner, span } = self;
+        let (inner, span) = f(inner, span);
+        Spanned { inner, span }
+    }
     pub fn map_context<K: Clone, F: FnOnce(C) -> K>(self, f: F) -> Spanned<T, K> {
         let Self { inner, span } = self;
         Spanned {

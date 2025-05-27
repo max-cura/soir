@@ -11,8 +11,8 @@
 
 main = 
   let a = Data.read Index_7example k_A in -- k_A is a constant
-    let b = Data.read Index_7example k_B in -- k_B is a constant
-      let b1 = b + 5 in
-        let a1 = Data.read Index_7example a in
-          let b2 = Data.read Index_7example b1 in
-            a1 + b2
+  let b = Data.read Index_7example k_B in -- k_B is a constant
+  let b1 = b + 5 in
+  let a1 = Data.read Index_7example a in
+  let b2 = Data.read Index_7example b1 in
+  a1 + b2

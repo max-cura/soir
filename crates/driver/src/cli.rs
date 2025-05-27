@@ -38,6 +38,13 @@ pub struct BuildArgs {
     // XXX: default value should be dependent on `cg_lang`.
     #[arg(short = 'o', long = "output", default_value = "generated.rs")]
     pub cg_output_file: PathBuf,
+
+    #[arg(long)]
+    pub emit_tokens: bool,
+    #[arg(long)]
+    pub emit_initial_ast: bool,
+    #[arg(long)]
+    pub emit_ast_after_operator_resolution: bool,
 }
 
 pub fn run() {

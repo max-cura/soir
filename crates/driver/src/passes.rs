@@ -6,7 +6,7 @@
 //!  - inference
 
 // base AST -> base AST
-pub mod binop_parse;
+pub mod operators;
 // base AST -> KNAST
 pub mod knf;
 // KNAST -> typed KNAST
