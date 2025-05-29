@@ -2,6 +2,7 @@
 #![feature(exitcode_exit_method)]
 #![feature(iterator_try_collect)]
 #![feature(impl_trait_in_bindings)]
+#![feature(iter_intersperse)]
 
 use tracing_subscriber::prelude::*;
 

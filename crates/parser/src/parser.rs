@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write,
     ops::{Deref, DerefMut},
     sync::Arc,
 };
@@ -11,7 +12,7 @@ use chumsky::{
     prelude::*,
 };
 use la_arena::{Arena, Idx};
-use lasso::{Rodeo, Spur};
+use lasso::{Resolver, Rodeo, Spur};
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
@@ -22,24 +23,29 @@ use telos_common::{
 };
 
 /// Pattern
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Pat {
     Cons {
         name: Spanned<Spur>,
-        args: Vec<Spanned<Idx<Pat>>>,
+        args: Vec<Spanned<Pat>>,
     },
     Ident {
         name: Spanned<Spur>,
     },
     Literal {
-        literal: Spanned<LiteralToken>,
+        literal: LiteralToken,
     },
 }
 /// Match arm
 #[derive(Debug, Clone)]
 pub struct MatchArm {
-    pub pat: Spanned<Idx<Pat>>,
+    pub pat: Spanned<Pat>,
     pub body: Spanned<Idx<Expr>>,
+}
+#[derive(Debug, Clone)]
+pub struct Def {
+    pub name: Spanned<Spur>,
+    pub expr: Spanned<Idx<Expr>>,
 }
 /// Expression
 #[derive(Debug, Clone)]
@@ -56,9 +62,10 @@ pub enum Expr {
         arms: Vec<Spanned<MatchArm>>,
     },
     /// Non-recursive let-binding
-    Let {
-        name: Spanned<Spur>,
-        expr: Spanned<Idx<Expr>>,
+    Let { def: Def, body: Spanned<Idx<Expr>> },
+    /// Recursive let-binding
+    LetRec {
+        defs: Vec<Spanned<Def>>,
         body: Spanned<Idx<Expr>>,
     },
     /// Lambda expression
@@ -75,25 +82,125 @@ pub enum Expr {
     },
     /// Operator sequence (before resolution)
     OpSeq { seq: Vec<OpExpr> },
-    /// Unary operator application
-    Unary {
-        operator: Spanned<Spur>,
+    /// Field access
+    Field {
         expr: Spanned<Idx<Expr>>,
-    },
-    /// Binary operator application
-    BinOp {
-        operator: Spanned<Spur>,
-        is_quot_operator: bool,
-        lhs: Spanned<Idx<Expr>>,
-        rhs: Spanned<Idx<Expr>>,
+        field: Spanned<Spur>,
     },
     /// Variable reference
-    Var { name: Spanned<Spur> },
+    Var { name: Spur },
 }
 #[derive(Debug, Copy, Clone)]
 pub enum OpExpr {
     Expr(Spanned<Idx<Expr>>),
     Op { name: Spanned<Spur>, is_quot: bool },
+}
+
+pub fn print_pat(_pat: &Pat, _resolver: &impl Resolver, out: &mut String, indent: usize) {
+    let ind = "  ".repeat(indent);
+    let _ = write!(out, "{ind}<pattern>");
+}
+
+pub fn print_expr(
+    ex: Idx<Expr>,
+    arena: &Arena<Expr>,
+    resolver: &impl Resolver,
+    out: &mut String,
+    indent: usize,
+) {
+    let ind = "  ".repeat(indent);
+    match &arena[ex] {
+        Expr::If { expr, then, else_ } => {
+            let _ = writeln!(out, "{ind}if");
+            print_expr(expr.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out, "{ind}then");
+            print_expr(then.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out, "{ind}else");
+            print_expr(else_.inner, arena, resolver, out, indent + 1);
+        }
+        Expr::OpSeq { seq } => {
+            let _ = writeln!(out, "{ind}[");
+            for s in seq {
+                match s {
+                    OpExpr::Expr(s) => {
+                        print_expr(s.inner, arena, resolver, out, indent + 1);
+                        let _ = writeln!(out);
+                    }
+                    OpExpr::Op { name, is_quot } => {
+                        let quot = if *is_quot { "`" } else { "" };
+                        let _ = writeln!(out, "{ind}  {quot}{}{quot}", resolver.resolve(name));
+                    }
+                }
+            }
+            let _ = write!(out, "{ind}]");
+        }
+        Expr::Match { expr, arms } => {
+            let _ = writeln!(out, "{ind}match");
+            print_expr(expr.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out, "{ind}in");
+            for arm in arms {
+                let _ = write!(out, "{ind}| ");
+                print_pat(&arm.pat, resolver, out, indent + 1);
+                let _ = writeln!(out, " ->");
+                print_expr(arm.body.inner, arena, resolver, out, indent + 2);
+                let _ = writeln!(out);
+            }
+        }
+        Expr::Let { def, body } => {
+            let _ = writeln!(out, "{ind}let {} =", resolver.resolve(&def.name));
+            print_expr(def.expr.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{ind}in");
+            print_expr(body.inner, arena, resolver, out, indent + 1);
+            // let _ = writeln!(out);
+        }
+        Expr::LetRec { defs, body } => {
+            let _ = writeln!(out, "{ind}let rec");
+            for def in defs {
+                let _ = write!(out, "{ind}  {} = ", resolver.resolve(&def.name));
+                print_expr(def.expr.inner, arena, resolver, out, indent);
+                let _ = writeln!(out);
+            }
+            let _ = writeln!(out, "{ind}in");
+            print_expr(body.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out);
+        }
+        Expr::Lam { params, body } => {
+            let _ = writeln!(
+                out,
+                "{ind}(\\{} ->",
+                params
+                    .iter()
+                    .map(|param| resolver.resolve(&param.inner))
+                    .intersperse(" ")
+                    .collect::<String>()
+            );
+            print_expr(body.inner, arena, resolver, out, 1);
+            let _ = writeln!(out);
+            let _ = write!(out, "{ind})");
+        }
+        Expr::Literal { literal } => {
+            let _ = write!(out, "{ind}");
+            let _ = literal.fmt(out, resolver);
+        }
+        Expr::App { func, args } => {
+            let _ = writeln!(out, "{ind}(");
+            print_expr(func.inner, arena, resolver, out, indent + 1);
+            let _ = writeln!(out);
+            for arg in args {
+                print_expr(arg.inner, arena, resolver, out, indent + 1);
+                let _ = writeln!(out);
+            }
+            let _ = write!(out, "{ind})");
+        }
+        Expr::Field { expr, field } => {
+            print_expr(expr.inner, arena, resolver, out, indent);
+            let _ = write!(out, ".{}", resolver.resolve(field));
+        }
+        Expr::Var { name } => {
+            let _ = write!(out, "{ind}{}", resolver.resolve(name));
+        }
+    }
 }
 /// Type constructor (note that `->` is a special infix constructor `Ty -> Ty -> Ty`)
 #[derive(Debug)]
@@ -163,7 +270,6 @@ pub struct ParserState<'r> {
     interner: &'r mut Rodeo,
     expr_arena: &'r mut Arena<Expr>,
     ty_arena: &'r mut Arena<TyExpr>,
-    pat_arena: &'r mut Arena<Pat>,
 }
 impl<'r> ParserState<'r> {
     fn intern(&mut self, s: &str) -> Spur {
@@ -182,13 +288,6 @@ impl<'r> ParserState<'r> {
         E: ParserExtra<'s, I, State = SimpleState<Self>>,
     {
         ex.state().ty_arena.alloc(t)
-    }
-    fn alloc_pat<'s, 'b, I, E, C>(p: Pat, ex: &mut MapExtra<'s, 'b, I, E>) -> Idx<Pat>
-    where
-        I: Input<'s, Span = SimpleSpan<usize, C>>,
-        E: ParserExtra<'s, I, State = SimpleState<Self>>,
-    {
-        ex.state().pat_arena.alloc(p)
     }
 }
 
@@ -326,10 +425,8 @@ where
             .clone()
             .delimited_by(just(Token::LeftParen), just(Token::RightParen))
             .or(select! {
-                Token::Ident(name) = e => Pat::Ident { name: Spanned::new(name, e.span()) },
-                Token::Literal(literal) = e => Pat::Literal { literal: Spanned::new(literal, e.span()) } }
-            .map_with(ParserState::alloc_pat))
-        ;
+            Token::Ident(name) = e => Pat::Ident { name: Spanned::new(name, e.span()) },
+            Token::Literal(literal) => Pat::Literal { literal } });
         ident
             .clone()
             .then(
@@ -350,7 +447,6 @@ where
                     Pat::Cons { name, args }
                 }
             })
-            .map_with(ParserState::alloc_pat)
             .or(pat_atom)
     });
 
@@ -365,7 +461,7 @@ where
         .labelled("literal");
         let var = ident
             .clone()
-            .map_with(|name, _| Expr::Var { name })
+            .map_with(|name, _| Expr::Var { name: name.inner })
             .map_with(ParserState::alloc_expr)
             .labelled("variable");
         let arm = just(T![|])
@@ -422,10 +518,23 @@ where
             .then(expr.clone().map_with(Spanned::from_extra))
             .then_ignore(just(T![in]))
             .then(expr.clone().map_with(Spanned::from_extra))
-            .map_with(|((name, expr), body), _| Expr::Let { name, expr, body })
+            .map_with(|((name, expr), body), _| Expr::Let { def: Def { name, expr }, body })
+            .map_with(ParserState::alloc_expr);
+        let let_rec = just(T![let])
+            .ignore_then(just(T![rec]))
+            .ignore_then(
+                ident.clone().then_ignore(just(T![=]))
+                .then(expr.clone().map_with(Spanned::from_extra))
+                .map_with(|(name, expr), e| Spanned::from_extra(Def { name, expr }, e))
+                .separated_by(just(T![,]))
+                .collect::<Vec<_>>()
+            )
+            .then_ignore(just(T![in]))
+            .then(expr.clone().map_with(Spanned::from_extra))
+            .map_with(|(defs, body), _| Expr::LetRec { defs, body })
             .map_with(ParserState::alloc_expr);
 
-        // remaining cases: expr op expr, expr expr
+        // remaining cases: expr op expr, expr expr, expr.name
         // these are both left recursive (annoyingly)
         // so we divide this into atoms:
         let expr_atom = literal
@@ -434,6 +543,7 @@ where
             .or(paren)
             .or(lam)
             .or(if_)
+            .or(let_rec)
             .or(let_);
         // then parse applications:
         let app = expr_atom
@@ -444,6 +554,7 @@ where
                     .clone()
                     .map_with(Spanned::from_extra)
                     .repeated()
+                    .at_least(1)
                     .collect::<Vec<_>>(),
             )
             .map_with(|(func, args), e| ParserState::alloc_expr(Expr::App { func, args }, e))
@@ -459,8 +570,16 @@ where
         .collect::<Vec<_>>()
         .map_with(|seq, e| ParserState::alloc_expr(Expr::OpSeq { seq }, e))
         .labelled("binary operator");
+        // then parse fields:
+        let field = expr_atom
+            .clone()
+            .map_with(Spanned::from_extra)
+            .then_ignore(just(T![.]))
+            .then(ident.clone())
+            .map_with(|(expr, field), _| Expr::Field { expr, field })
+            .map_with(ParserState::alloc_expr);
 
-        binopseq.or(app).or(expr_atom)
+        field.or(binopseq).or(app).or(expr_atom)
     })
     .labelled("expression");
 
@@ -518,7 +637,6 @@ pub fn parse(
     interner: &mut Rodeo,
     expr_arena: &mut Arena<Expr>,
     ty_arena: &mut Arena<TyExpr>,
-    pat_arena: &mut Arena<Pat>,
 ) -> Result<Vec<Spanned<Item>>, Vec<ParseError>> {
     let len = sources.get(source_id).contents().len();
     let eoi = <Span as chumsky::span::Span>::new(source_id, len..len);
@@ -527,7 +645,6 @@ pub fn parse(
         interner,
         expr_arena,
         ty_arena,
-        pat_arena,
     });
     let (output, errors) = parser()
         .parse_with_state(

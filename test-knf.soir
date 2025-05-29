@@ -1,0 +1,5 @@
+
+main param =
+	let var = param in
+		var
+

@@ -45,6 +45,8 @@ pub struct BuildArgs {
     pub emit_initial_ast: bool,
     #[arg(long)]
     pub emit_ast_after_operator_resolution: bool,
+    #[arg(long)]
+    pub emit_knf: bool,
 }
 
 pub fn run() {

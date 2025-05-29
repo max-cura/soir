@@ -5,9 +5,13 @@
 //!  - k-normalization
 //!  - inference
 
-// base AST -> base AST
+// Operator parsing
 pub mod operators;
-// base AST -> KNAST
+
+// Flow Assignment
+pub mod flow;
+
+// K-normalization
 pub mod knf;
-// KNAST -> typed KNAST
-pub mod infer;
+
+// Type inference

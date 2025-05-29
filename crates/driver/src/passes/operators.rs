@@ -1,21 +1,27 @@
+//! Deferred operator parsing. Resolves [`Expr::OpSeq`] to a nest of [`Expr::App`] via Pratt parsing.
+
 use std::{collections::HashMap, iter::once};
 
-use chumsky::span::Span;
+use chumsky::span::Span as _;
 use la_arena::{Arena, Idx};
 use lasso::{Resolver, Spur};
 use miette::{Diagnostic, SourceSpan};
-use telos_common::{source::Sources, span::Spanned};
-use telos_parser::parser::{Expr, Fixity, Item, OpExpr, Side};
+use telos_common::{
+    source::Sources,
+    span::{Span, Spanned},
+};
+use telos_parser::parser::{Def, Expr, Fixity, Item, OpExpr, Side};
 use thiserror::Error;
 
+/// Internal structure containing the information in `infix/unary/l/r` items
 #[derive(Default)]
 struct OperatorSet {
     /// Set of infix binary operators declared in the program
-    infix_binary: HashMap<Spur, Spanned<(u16, Fixity)>>,
+    infix_binary: HashMap<Spur, (Span, u16, Fixity, Spur)>,
     /// Set of unary prefix operators declared in the program
-    left_unary: HashMap<Spur, Spanned<u16>>,
+    left_unary: HashMap<Spur, (Span, u16, Spur)>,
     /// Set of unary postfix operators declared in the program
-    right_unary: HashMap<Spur, Spanned<u16>>,
+    right_unary: HashMap<Spur, (Span, u16, Spur)>,
 }
 
 /// Get the set of operators declared in a program; check for _ambiguous_ duplications and return
@@ -25,9 +31,9 @@ fn get_operator_info(
     resolver: &impl Resolver,
     sources: &Sources,
 ) -> (OperatorSet, Vec<OperatorError>) {
-    let mut infix_binary: HashMap<Spur, Spanned<(u16, Fixity)>> = HashMap::default();
-    let mut left_unary: HashMap<Spur, Spanned<u16>> = HashMap::default();
-    let mut right_unary: HashMap<Spur, Spanned<u16>> = HashMap::default();
+    let mut infix_binary: HashMap<Spur, (Span, u16, Fixity, Spur)> = HashMap::default();
+    let mut left_unary: HashMap<Spur, (Span, u16, Spur)> = HashMap::default();
+    let mut right_unary: HashMap<Spur, (Span, u16, Spur)> = HashMap::default();
 
     let mut errors = vec![];
 
@@ -36,7 +42,7 @@ fn get_operator_info(
             Item::Binding { .. } | Item::TyDecl { .. } => continue,
             Item::Infix {
                 operator,
-                impl_: _,
+                impl_,
                 precedence,
                 fixity,
             } => {
@@ -44,46 +50,46 @@ fn get_operator_info(
                     // infix operator already declared
                     errors.push(OperatorError::Redeclaration {
                         operator: resolver.resolve(&operator.inner).to_string(),
-                        first: sources.translate_span(first.span),
+                        first: sources.translate_span(first.0),
                         second: sources.translate_span(*span),
                     });
                 } else {
                     infix_binary.insert(
                         operator.inner,
-                        Spanned::new((precedence.inner, *fixity), *span),
+                        (*span, precedence.inner, *fixity, impl_.inner),
                     );
                 }
             }
             Item::Unary {
                 operator,
-                impl_: _,
+                impl_,
                 precedence,
                 side: Side::Left,
             } => {
                 if let Some(first) = left_unary.get(&operator.inner) {
                     errors.push(OperatorError::Redeclaration {
                         operator: resolver.resolve(&operator.inner).to_string(),
-                        first: sources.translate_span(first.span),
+                        first: sources.translate_span(first.0),
                         second: sources.translate_span(*span),
                     });
                 } else {
-                    left_unary.insert(operator.inner, Spanned::new(precedence.inner, *span));
+                    left_unary.insert(operator.inner, (*span, precedence.inner, impl_.inner));
                 }
             }
             Item::Unary {
                 operator,
-                impl_: _,
+                impl_,
                 precedence,
                 side: Side::Right,
             } => {
                 if let Some(first) = right_unary.get(&operator.inner) {
                     errors.push(OperatorError::Redeclaration {
                         operator: resolver.resolve(&operator.inner).to_string(),
-                        first: sources.translate_span(first.span),
+                        first: sources.translate_span(first.0),
                         second: sources.translate_span(*span),
                     });
                 } else {
-                    right_unary.insert(operator.inner, Spanned::new(precedence.inner, *span));
+                    right_unary.insert(operator.inner, (*span, precedence.inner, impl_.inner));
                 }
             }
         }
@@ -136,30 +142,27 @@ pub struct OperatorCtx<'a, R> {
     sources: &'a Sources,
 }
 impl<R: Resolver> OperatorCtx<'_, R> {
-    pub fn infix_binding_power(&self, operator: Spur) -> Option<(u32, u32)> {
-        let Spanned {
-            inner: (precedence, fixity),
-            span: _,
-        } = self.operators.infix_binary.get(&operator)?;
+    pub fn infix_binding_power(&self, operator: Spur) -> Option<(u32, u32, Spur)> {
+        let (_, precedence, fixity, impl_) = self.operators.infix_binary.get(&operator)?;
         let base = *precedence as u32 * 2;
         let (left, right) = match fixity {
             Fixity::Left => (base, base + 1),
             Fixity::Right => (base + 1, base),
             Fixity::None => (base, base),
         };
-        Some((left, right))
+        Some((left, right, *impl_))
     }
-    pub fn prefix_binding_power(&self, operator: Spur) -> Option<u32> {
+    pub fn prefix_info(&self, operator: Spur) -> Option<(u32, Spur)> {
         self.operators
             .left_unary
             .get(&operator)
-            .map(|spanned| spanned.inner as u32 * 2)
+            .map(|(_, precedence, impl_)| (*precedence as u32 * 2, *impl_))
     }
-    pub fn postfix_binding_power(&self, operator: Spur) -> Option<u32> {
+    pub fn postfix_binding_power(&self, operator: Spur) -> Option<(u32, Spur)> {
         self.operators
             .right_unary
             .get(&operator)
-            .map(|spanned| spanned.inner as u32 * 2)
+            .map(|(_, precedence, impl_)| (*precedence as u32 * 2, *impl_))
     }
 }
 
@@ -209,6 +212,7 @@ pub fn resolve_operators<R: Resolver>(
     let mut queue: Vec<Spanned<Idx<Expr>>> = vec![expr];
 
     while let Some(expr) = queue.pop() {
+        // tracing::trace!("resolve: {expr:?}");
         // First, push all of the sub-expressions
         match &ctx.arena[expr.inner] {
             Expr::OpSeq { seq } => queue.extend(seq.iter().filter_map(|op_expr| match op_expr {
@@ -220,30 +224,35 @@ pub fn resolve_operators<R: Resolver>(
                 queue.extend(once(*expr).chain(arms.iter().map(|arm| arm.inner.body)))
             }
             Expr::Let {
-                name: _,
-                expr,
+                def: Def { name: _, expr },
                 body,
             } => queue.extend([*expr, *body].into_iter()),
+            Expr::LetRec { defs, body } => {
+                queue.extend(defs.iter().map(|def| def.expr).chain(once(*body)))
+            }
             Expr::Lam { params: _, body } => queue.push(*body),
             Expr::App { func: _, args } => queue.extend_from_slice(&args),
             Expr::Literal { literal: _ } | Expr::Var { name: _ } => {}
-            Expr::BinOp { .. } => {
-                unreachable!("Reached BinOp in operators::resolve_operators")
-            }
-            Expr::Unary { .. } => {
-                unreachable!("Reached Unary in operators::resolve_operators")
-            }
+            Expr::Field { expr, field: _ } => queue.push(*expr),
         }
 
         // Next, if it's an operator sequence, grab it
         let Expr::OpSeq { seq: op_seq } = &mut ctx.arena[expr.inner] else {
             continue;
         };
+        if op_seq.len() == 1
+            && let Some(OpExpr::Expr(e)) = op_seq.first()
+        {
+            // tracing::trace!("1-length op_seq: {e:?}");
+            continue;
+        }
         let mut op_seq = std::mem::take(op_seq).into_iter();
 
         let Some(new_root_expr) = pratt(&mut op_seq, &mut queue, &mut ctx, 0)? else {
             unreachable!("expected OpSeq to be non-empty")
         };
+
+        // tracing::trace!("replacing {:?} with {:?}", expr.inner, new_root_expr.inner);
 
         // note: "span" hasn't actually changed, so we just use the Expr itself
         ctx.arena[expr.inner] = new_root_expr.inner;
@@ -267,7 +276,7 @@ fn pratt<R: Resolver>(
         }
         // Case: prefix operator
         Some(OpExpr::Op { name, is_quot: _ }) => {
-            let Some(power) = ctx.prefix_binding_power(*name) else {
+            let Some((power, impl_)) = ctx.prefix_info(*name) else {
                 return Err(OperatorError::NotXFix {
                     operator: ctx.resolver.resolve(&name).to_string(),
                     fix: "prefix".to_string(),
@@ -282,9 +291,9 @@ fn pratt<R: Resolver>(
             };
             let combined_span = name.span.union(rhs.span);
             Spanned::new(
-                Expr::Unary {
-                    operator: name,
-                    expr: rhs.map(|rhs| ctx.arena.alloc(rhs)),
+                Expr::App {
+                    func: name.map(|_| ctx.arena.alloc(Expr::Var { name: impl_ })),
+                    args: vec![rhs.map(|rhs| ctx.arena.alloc(rhs))],
                 },
                 combined_span,
             )
@@ -296,7 +305,7 @@ fn pratt<R: Resolver>(
     };
 
     loop {
-        let (operator, is_quot) = match op_seq.next() {
+        let (operator, _is_quot) = match op_seq.next() {
             Some(OpExpr::Op { name, is_quot }) => (name, is_quot),
             None => break, // end of input
             Some(OpExpr::Expr(expr)) => {
@@ -306,22 +315,22 @@ fn pratt<R: Resolver>(
             }
         };
 
-        if let Some(power) = ctx.postfix_binding_power(operator.inner) {
+        if let Some((power, impl_)) = ctx.postfix_binding_power(operator.inner) {
             if power < min_power {
                 break;
             }
             let combined_span = lhs.span.union(operator.span);
             lhs = Spanned::new(
-                Expr::Unary {
-                    operator: operator,
-                    expr: lhs.map(|lhs| ctx.arena.alloc(lhs)),
+                Expr::App {
+                    func: operator.map(|_| ctx.arena.alloc(Expr::Var { name: impl_ })),
+                    args: vec![lhs.map(|lhs| ctx.arena.alloc(lhs))],
                 },
                 combined_span,
             );
             continue;
         }
 
-        let Some((l_power, r_power)) = ctx.infix_binding_power(operator.inner) else {
+        let Some((l_power, r_power, impl_)) = ctx.infix_binding_power(operator.inner) else {
             // error: not actually an infix operator OR a postfix operator; we can check
             // the following token to determine which we _expect_
             let next_next = op_seq.peek();
@@ -351,11 +360,12 @@ fn pratt<R: Resolver>(
 
         let combined_span = lhs.span.union(rhs.span);
         lhs = Spanned::new(
-            Expr::BinOp {
-                operator,
-                is_quot_operator: is_quot,
-                lhs: lhs.map(|lhs| ctx.arena.alloc(lhs)),
-                rhs: rhs.map(|rhs| ctx.arena.alloc(rhs)),
+            Expr::App {
+                func: operator.map(|_| ctx.arena.alloc(Expr::Var { name: impl_ })),
+                args: vec![
+                    lhs.map(|lhs| ctx.arena.alloc(lhs)),
+                    rhs.map(|rhs| ctx.arena.alloc(rhs)),
+                ],
             },
             combined_span,
         );

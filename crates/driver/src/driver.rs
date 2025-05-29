@@ -5,7 +5,7 @@ use lasso::Rodeo;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::cli::BuildArgs;
+use crate::{cli::BuildArgs, passes::knf::print_ex};
 use telos_common::{
     source::{Source, SourceError, SourceId, Sources},
     span::Spanned,
@@ -105,7 +105,6 @@ pub fn build(build: BuildArgs) {
 
     let mut expr_arena = Arena::new();
     let mut ty_arena = Arena::new();
-    let mut pat_arena = Arena::new();
     let mut parse_items: Vec<Spanned<Item>> = vec![];
     let mut parse_errors = vec![];
     for (source_id, tokens) in source_tokens {
@@ -116,7 +115,6 @@ pub fn build(build: BuildArgs) {
             &mut interner,
             &mut expr_arena,
             &mut ty_arena,
-            &mut pat_arena,
         ) {
             Ok(items) => parse_items.extend(items),
             Err(errors) => parse_errors.extend_from_slice(&errors),
@@ -129,7 +127,23 @@ pub fn build(build: BuildArgs) {
     if build.emit_initial_ast {
         eprintln!();
         eprintln!("--emit-initial-ast");
-        eprintln!("{parse_items:?}");
+        for item in &parse_items {
+            let Item::Binding { name, params, body } = &item.inner else {
+                continue;
+            };
+            eprintln!(
+                "{} {} =",
+                interner.resolve(&name),
+                params
+                    .iter()
+                    .map(|p| interner.resolve(&p.inner))
+                    .intersperse(" ")
+                    .collect::<String>()
+            );
+            let mut o = String::new();
+            telos_parser::parser::print_expr(body.inner, &expr_arena, &interner, &mut o, 1);
+            eprintln!("{o}");
+        }
     }
 
     if let Err(errors) = crate::passes::operators::resolve_all_operators(
@@ -139,6 +153,51 @@ pub fn build(build: BuildArgs) {
         &mut expr_arena,
     ) {
         dump_errors(errors)
+    }
+
+    if build.emit_ast_after_operator_resolution {
+        eprintln!();
+        eprintln!("--emit-ast-after-operator-resolution");
+        for item in &parse_items {
+            let Item::Binding { name, params, body } = &item.inner else {
+                continue;
+            };
+            eprintln!(
+                "{} {} =",
+                interner.resolve(&name),
+                params
+                    .iter()
+                    .map(|p| interner.resolve(&p.inner))
+                    .intersperse(" ")
+                    .collect::<String>()
+            );
+            let mut o = String::new();
+            telos_parser::parser::print_expr(body.inner, &expr_arena, &interner, &mut o, 1);
+            eprintln!("{o}");
+        }
+    }
+
+    // normalize
+    let (k_items, interner, ex_arena) =
+        crate::passes::knf::k_norm_items(parse_items, interner, expr_arena);
+
+    if build.emit_knf {
+        eprintln!();
+        eprintln!("--emit-knf");
+        for (_, name, params, body) in k_items {
+            eprintln!(
+                "{} {} =",
+                interner.resolve(&name),
+                params
+                    .iter()
+                    .map(|p| interner.resolve(&p.inner))
+                    .intersperse(" ")
+                    .collect::<String>()
+            );
+            let mut o = String::new();
+            crate::passes::knf::print_ex(body, &ex_arena, &interner, &mut o, 1);
+            eprintln!("{o}");
+        }
     }
 }
 

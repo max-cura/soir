@@ -16,3 +16,4 @@ telos-common = { path = "../common" }
 telos-parser = { path = "../parser" }
 either = "1.15.0"
 itertools = "0.14.0"
+maplit = "1.0.2"

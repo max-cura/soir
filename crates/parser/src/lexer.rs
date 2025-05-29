@@ -26,7 +26,11 @@ pub enum LiteralToken {
     Unit,
 }
 impl LiteralToken {
-    pub fn fmt(&self, w: &mut impl std::fmt::Write, interner: &impl lasso::Reader) -> fmt::Result {
+    pub fn fmt(
+        &self,
+        w: &mut impl std::fmt::Write,
+        interner: &impl lasso::Resolver,
+    ) -> fmt::Result {
         match self {
             LiteralToken::Numeric { radix, digits } => {
                 let prefix = match radix {
@@ -68,6 +72,7 @@ pub enum Token {
     Match,
     In,
     Let,
+    Rec,
     Infix(Fixity),
     Unary(Side),
 
@@ -79,6 +84,7 @@ pub enum Token {
     Dot,
     Backslash,
     Pipe,
+    Comma,
 
     // --- delimiters ---
     LeftParen,
@@ -115,6 +121,7 @@ impl Token {
             Token::Match => write!(w, "match"),
             Token::In => write!(w, "in"),
             Token::Let => write!(w, "let"),
+            Token::Rec => write!(w, "rec"),
             Token::Infix(fixity) => match fixity {
                 Fixity::None => write!(w, "infix"),
                 Fixity::Left => write!(w, "infixl"),
@@ -131,6 +138,7 @@ impl Token {
             Token::Dot => write!(w, "."),
             Token::Backslash => write!(w, "\\"),
             Token::Pipe => write!(w, "|"),
+            Token::Comma => write!(w, ","),
             Token::LeftParen => write!(w, "("),
             Token::RightParen => write!(w, ")"),
             Token::Error(spur) => write!(w, "<ERROR:{}>", interner.resolve(spur)),
@@ -149,12 +157,14 @@ pub macro T {
     [;] => { $crate::lexer::Token::Semicolon },
     [.] => { $crate::lexer::Token::Dot },
     [|] => { $crate::lexer::Token::Pipe },
+    [,] => { $crate::lexer::Token::Comma },
     [if] => { $crate::lexer::Token::If },
     [then] => { $crate::lexer::Token::Then },
     [else] => { $crate::lexer::Token::Else },
     [match] => { $crate::lexer::Token::Match },
     [in] => { $crate::lexer::Token::In },
     [let] => { $crate::lexer::Token::Let },
+    [rec] => { $crate::lexer::Token::Rec },
     [infixl] => { $crate::lexer::Token::Infix(Fixity::Left) },
     [infixr] => { $crate::lexer::Token::Infix(Fixity::Right) },
     [infix] => { $crate::lexer::Token::Infix(Fixity::None) },
@@ -257,6 +267,7 @@ pub fn lexer<'s, 'r: 's>() -> impl Parser<
         .or(keyword("match").to(T![match]))
         .or(keyword("in").to(T![in]))
         .or(keyword("let").to(T![let]))
+        .or(keyword("rec").to(T![rec]))
         .or(keyword("infixl").to(T![infixl]))
         .or(keyword("infixr").to(T![infixr]))
         .or(keyword("infix").to(T![infix]))
@@ -281,6 +292,7 @@ pub fn lexer<'s, 'r: 's>() -> impl Parser<
         .or(just(";").to(T![;]))
         .or(just(".").to(T![.]))
         .or(just("|").to(T![|]))
+        .or(just(",").to(T![,]))
         .or(just("\\").to(Token::Backslash))
         .or(just("(").to(Token::LeftParen))
         .or(just(")").to(Token::RightParen));
