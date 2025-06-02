@@ -36,6 +36,19 @@ pub enum Pat {
         literal: LiteralToken,
     },
 }
+impl Pat {
+    pub fn find_free_vars(&self) -> Vec<Spur> {
+        match self {
+            Pat::Cons { name: _, args } => args
+                .iter()
+                .map(|arg| arg.find_free_vars().into_iter())
+                .flatten()
+                .collect(),
+            Pat::Ident { name } => vec![name.inner],
+            Pat::Literal { literal: _ } => vec![],
+        }
+    }
+}
 /// Match arm
 #[derive(Debug, Clone)]
 pub struct MatchArm {
@@ -427,8 +440,8 @@ where
             .or(select! {
             Token::Ident(name) = e => Pat::Ident { name: Spanned::new(name, e.span()) },
             Token::Literal(literal) => Pat::Literal { literal } });
-        ident
-            .clone()
+        just(Token::Backtick)
+            .ignore_then(ident.clone())
             .then(
                 pat_atom
                     .clone()
@@ -436,17 +449,7 @@ where
                     .repeated()
                     .collect::<Vec<_>>(),
             )
-            .map_with(|(name, args), _| {
-                // XXX: it's not possible to disambiguate, without type information, what's a
-                // constructor and what's a variable, so we do a conservative approximation:
-                // we guarantee that Pat::Cons is a constructor, and Pat::Ident is either a
-                // variable or a constructor
-                if args.is_empty() {
-                    Pat::Ident { name }
-                } else {
-                    Pat::Cons { name, args }
-                }
-            })
+            .map_with(|(name, args), _| Pat::Cons { name, args })
             .or(pat_atom)
     });
 
@@ -482,11 +485,11 @@ where
                 .repeated()
                 .collect::<Vec<_>>(),
             )
-            .map_with(|(cond, _arms), e| {
+            .map_with(|(cond, arms), e| {
                 ParserState::alloc_expr(
                     Expr::Match {
                         expr: cond,
-                        arms: vec![],
+                        arms,
                     },
                     e,
                 )
@@ -560,26 +563,57 @@ where
             .map_with(|(func, args), e| ParserState::alloc_expr(Expr::App { func, args }, e))
             .labelled("function application");
         // then parse binopseqs
-        let binopseq = select! {
+        // these are:
+        // atoms and ops, but you can't have two atoms in a row
+        //  (op+ atom)+ [op+]
+        //  (atom op+)+ [atom]
+        let op_op = select! {
             Token::Operator(op) = e => OpExpr::Op{ name: Spanned::new(op, e.span()), is_quot: false },
             Token::QuotOperator(op) = e => OpExpr::Op{ name: Spanned::new(op, e.span()), is_quot: true },
-        }
-        .or(Parser::map(app.clone().map_with(Spanned::from_extra), OpExpr::Expr))
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map_with(|seq, e| ParserState::alloc_expr(Expr::OpSeq { seq }, e))
+        };
+        let op_expr = Parser::map(expr_atom.clone().map_with(Spanned::from_extra), OpExpr::Expr);
+        let binopseq =
+        op_op.clone().repeated().at_least(1).collect::<Vec<_>>().then(op_expr.clone())
+            .map(|(mut a, b)| { a.push(b); a })
+            .repeated().at_least(1)
+            .flatten()
+            .collect::<Vec<_>>()
+        .then(op_op.clone().repeated().collect::<Vec<_>>())
+        .map(|(mut a, b)| { a.extend(b); a } )
+        .or(
+            op_expr.clone().then(op_op.clone().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|(a, b)| {
+                let mut v = vec![a];
+                v.extend(b);
+                v
+            })
+            .repeated().at_least(1).flatten().collect::<Vec<_>>()
+            .then(op_expr.clone().or_not())
+            .map(|(mut a, b)| {
+                if let Some(b) = b {
+                    a.push(b);
+                }
+                a
+            })
+        )
+        .map_with(|seq, e|{
+            // let mut seq: Vec<OpExpr> = atom_seqs.into_iter().map(|(mut ops, atom)| {
+            //     ops.push(atom);
+            //     ops.into_iter()
+            // }).flatten().collect();
+            // seq.extend_from_slice(&tail);
+            ParserState::alloc_expr(Expr::OpSeq { seq }, e)})
         .labelled("binary operator");
         // then parse fields:
         let field = expr_atom
             .clone()
             .map_with(Spanned::from_extra)
-            .then_ignore(just(T![.]))
+            .then_ignore(just(T![->]))
             .then(ident.clone())
             .map_with(|(expr, field), _| Expr::Field { expr, field })
             .map_with(ParserState::alloc_expr);
 
-        field.or(binopseq).or(app).or(expr_atom)
+        field.or(app).or(binopseq).or(expr_atom)
     })
     .labelled("expression");
 

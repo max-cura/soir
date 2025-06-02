@@ -2,10 +2,11 @@ use std::{io::IsTerminal, path::PathBuf, process::ExitCode, sync::Arc};
 
 use la_arena::Arena;
 use lasso::Rodeo;
+use maplit::hashmap;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{cli::BuildArgs, passes::knf::print_ex};
+use crate::{cli::BuildArgs, passes::origin::Placement};
 use telos_common::{
     source::{Source, SourceError, SourceId, Sources},
     span::Spanned,
@@ -97,9 +98,9 @@ pub fn build(build: BuildArgs) {
         fail()
     }
 
-    if build.emit_tokens {
+    if build.print_tokens {
         eprintln!();
-        eprintln!("--emit-tokens");
+        eprintln!("--print-tokens");
         eprintln!("{source_tokens:?}");
     }
 
@@ -124,9 +125,9 @@ pub fn build(build: BuildArgs) {
         dump_errors(parse_errors)
     }
 
-    if build.emit_initial_ast {
+    if build.print_initial_ast {
         eprintln!();
-        eprintln!("--emit-initial-ast");
+        eprintln!("--print-initial-ast");
         for item in &parse_items {
             let Item::Binding { name, params, body } = &item.inner else {
                 continue;
@@ -146,6 +147,10 @@ pub fn build(build: BuildArgs) {
         }
     }
 
+    // for (spur, str) in &interner {
+    //     eprintln!("{spur:?} = {str}");
+    // }
+
     if let Err(errors) = crate::passes::operators::resolve_all_operators(
         &parse_items,
         &interner,
@@ -155,9 +160,9 @@ pub fn build(build: BuildArgs) {
         dump_errors(errors)
     }
 
-    if build.emit_ast_after_operator_resolution {
+    if build.debug_operator_parsing {
         eprintln!();
-        eprintln!("--emit-ast-after-operator-resolution");
+        eprintln!("--debug-operator-parsing");
         for item in &parse_items {
             let Item::Binding { name, params, body } = &item.inner else {
                 continue;
@@ -178,12 +183,79 @@ pub fn build(build: BuildArgs) {
     }
 
     // normalize
-    let (k_items, interner, ex_arena) =
+    let (k_items, mut interner, mut ex_arena) =
         crate::passes::knf::k_norm_items(parse_items, interner, expr_arena);
 
-    if build.emit_knf {
+    if build.print_knf {
         eprintln!();
-        eprintln!("--emit-knf");
+        eprintln!("--print-knf");
+        for (_, name, params, body) in &k_items {
+            eprintln!(
+                "{} {} =",
+                interner.resolve(&name),
+                params
+                    .iter()
+                    .map(|p| interner.resolve(&p.inner))
+                    .intersperse(" ")
+                    .collect::<String>()
+            );
+            // let mut o = String::new();
+            // crate::passes::knf::print_ex(*body, &ex_arena, &interner, &mut o, 1);
+            // eprintln!("{o}");
+            crate::passes::origin::PrintCtx {
+                resolver: &interner,
+                arena: &ex_arena,
+                width: 120,
+                ex_map: None,
+            }
+            .pretty_print(**body);
+        }
+    }
+
+    let mut n = |n| interner.get_or_intern(n);
+    let mut builtins = hashmap![];
+    use crate::passes::origin::OriginExpr as OE;
+    {
+        let a = n("#badd0_lhs");
+        let b = n("#badd0_rhs");
+        builtins.insert(
+            n("__builtin_add"),
+            Placement {
+                expr: OE::Isect(vec![OE::loc_var(a), OE::loc_var(b)]),
+                quantifiers: vec![a, b],
+            },
+        );
+    }
+    {
+        let k = n("#fread0_key");
+        let g = n("fread");
+        builtins.insert(
+            n("__fake_read"),
+            Placement {
+                expr: OE::Concat(vec![OE::loc_var(k), OE::loc_gen(g)]),
+                quantifiers: vec![k],
+            },
+        );
+    }
+    let (interner, f_map) = match crate::passes::origin::analyze_items(
+        &k_items,
+        interner,
+        &mut ex_arena,
+        &builtins,
+        &sources,
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("");
+            eprintln!("Failed origin analysis:");
+            eprintln!("{e:?}");
+            fail();
+        }
+    };
+
+    if build.print_origins {
+        eprintln!();
+        eprintln!("--print-origins");
         for (_, name, params, body) in k_items {
             eprintln!(
                 "{} {} =",
@@ -194,9 +266,17 @@ pub fn build(build: BuildArgs) {
                     .intersperse(" ")
                     .collect::<String>()
             );
-            let mut o = String::new();
-            crate::passes::knf::print_ex(body, &ex_arena, &interner, &mut o, 1);
-            eprintln!("{o}");
+            // let mut o = String::new();
+            // crate::passes::knf::print_ex(*body, &ex_arena, &interner, &mut o, 1);
+            // eprintln!("{o}");
+            crate::passes::origin::PrintCtx {
+                resolver: &interner,
+                arena: &ex_arena,
+                width: 120,
+                ex_map: Some(&f_map),
+            }
+            .pretty_print(*body);
+            eprintln!();
         }
     }
 }

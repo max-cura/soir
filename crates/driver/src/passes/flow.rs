@@ -27,49 +27,262 @@
 
 use std::collections::HashMap;
 
-use la_arena::{Arena, Idx};
-use lasso::Spur;
-use telos_common::span::Spanned;
+use la_arena::{Arena, ArenaMap, Idx};
+use lasso::{Rodeo, Spur};
+use miette::{LabeledSpan, miette};
+use telos_common::{
+    source::Sources,
+    span::{Span, Spanned},
+};
 
 use super::knf::Ex;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Loc {
     /// This location is derived from computation (e.g. a boundary function)
-    Value(Spur),
+    Value(Idx<Ex>),
+    /// This location is derived from some parameter
+    Param(Spur),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Origin {
     inner: Vec<Loc>,
 }
-
-#[derive(Debug, Default)]
-struct PlacementInfo {
-    // Immediate set of expressions upon which the value of this expression is dependent
-    immediate_deps: Vec<Spur>,
-    // All of the locations which are guaranteed to be available to this expression when it is run
-    origin: Origin,
-    // The final decision for where this expression will be run
-    location: Option<Loc>,
-}
-
-pub fn analyze_expr(expr: Spanned<Idx<Ex>>, ctx: Ctx) {
-    match &ctx.arena[expr.inner] {
-        Ex::Match { expr, arms } => todo!(),
-        Ex::Let { def, body } => todo!(),
-        Ex::LetRec { defs, body } => todo!(),
-        Ex::Lam { params, body } => todo!(),
-        Ex::Literal { literal } => todo!(),
-        Ex::App { func, args } => todo!(),
-        Ex::Field { expr, field } => todo!(),
-        Ex::Var { name } => todo!(),
+impl Origin {
+    fn no_deps() -> Self {
+        Origin { inner: vec![] }
+    }
+    fn param(arg_name: Spur) -> Self {
+        Origin {
+            inner: vec![Loc::Param(arg_name)],
+        }
+    }
+    fn compose(&self, rhs: &Self) -> Self {
+        todo!()
+    }
+    fn intersect(all: &[Self]) -> Self {
+        todo!()
     }
 }
 
-pub struct Ctx {
-    pub funcs: Bindings<FuncPlacement>,
-    pub arena: Arena<Ex>,
+#[derive(Debug, Clone)]
+struct PlacementInfo {
+    // // Immediate set of expressions upon which the value of this expression is dependent
+    // immediate_deps: Vec<Idx<Ex>>,
+    // All of the locations which are guaranteed to be available to this expression when it is run
+    origin: Origin,
+    // // The final decision for where this expression will be run
+    // location: Option<Loc>,
+    /// If it's a function
+    func: Option<FuncPlacement>,
+}
+impl PlacementInfo {
+    /// `PlacementInfo` for an expression with no dependencies (i.e. that can be executed on any
+    /// node).
+    fn no_deps() -> Self {
+        PlacementInfo {
+            // immediate_deps: vec![],
+            origin: Origin::no_deps(),
+            func: None,
+        }
+    }
+    fn param(arg_name: Spur) -> Self {
+        PlacementInfo {
+            origin: Origin::param(arg_name),
+            func: None,
+        }
+    }
+    fn intersect(all: &[Self]) -> Self {
+        todo!()
+    }
+    fn compose(&self, rhs: &Self) -> Self {
+        todo!()
+    }
+}
+
+fn analyze_func(
+    expr: Spanned<Idx<Ex>>,
+    params: Vec<Spur>,
+    arena: &Arena<Ex>,
+    ctx: &mut Ctx,
+) -> miette::Result<FuncPlacement> {
+    todo!()
+}
+
+/// Analyze an expression `expr` which was named `bound_name` by K-normalization.
+fn analyze_expr(expr: Spanned<Idx<Ex>>, arena: &Arena<Ex>, ctx: &mut Ctx) -> miette::Result<()> {
+    match &arena[expr.inner] {
+        Ex::Match {
+            expr: match_expr,
+            arms,
+        } => {
+            // compose `expr` with the intersection of `arms`
+            // make sure to bind any pattern variables in the arms
+            // as for the final origin of the `match`, it can only be the intersection of the origins
+            let expr_placement = ctx
+                .get_binding_placement(**match_expr, match_expr.span)?
+                .clone();
+            let mut arm_origins = vec![];
+            for arm in arms {
+                ctx.bindings.enter();
+                for fv in arm.pat.find_free_vars() {
+                    ctx.bindings.insert(fv, expr_placement.clone());
+                }
+                analyze_expr(arm.body, arena, ctx)?;
+                arm_origins.push(
+                    ctx.mapping
+                        .get(*arm.body)
+                        .expect("Idx<Ex> is not mapped")
+                        .clone(),
+                );
+                ctx.bindings.exit();
+            }
+
+            // First, we have a hard dependency on `expr_placement`, simply because we must have
+            // gotten that information in order to figure out which arm to take.
+            // Secondly, we must conservatively assume that any of the arms could have been chosen,
+            // so we take the set of origins that are common to all the arms.
+            //
+            // thus: origin = expr_placement | (&* arm_placements)
+            let placement = expr_placement.compose(&PlacementInfo::intersect(&arm_origins));
+            ctx.mapping.insert(*expr, placement);
+        }
+        Ex::Let { def, body } => {
+            // TODO: when def.expr is a function, we MUST bind it in func_placement
+
+            // bind `def` and then proxy to `body`
+            analyze_expr(def.expr, arena, ctx)?;
+            ctx.bindings.enter();
+            ctx.bindings.insert(
+                def.name,
+                ctx.get_binding_placement_from_idx(*def.expr)?.clone(),
+            );
+            analyze_expr(*body, arena, ctx)?;
+            ctx.bindings.exit();
+            let Some(body_placement) = ctx.mapping.get(**body) else {
+                panic!(
+                    "analyze_expr on '{:?}' did not generate a mapping",
+                    body.inner
+                );
+            };
+            ctx.mapping.insert(*expr, body_placement.clone());
+        }
+        Ex::LetRec { defs, body } => {
+            // bind `defs` and then proxy to `body`
+            // note that in theory `defs` are allowed to be mutually recursive
+            todo!()
+        }
+        Ex::Lam { params, body } => {
+            // generate a FuncPlacement and bind it to `bound_name`
+            ctx.bindings.enter();
+            let mut param_syms = vec![];
+            for param in params {
+                let param_sym = ctx.new_param();
+                param_syms.push(param_sym);
+                ctx.bindings
+                    .insert(param.inner, PlacementInfo::param(param_sym));
+            }
+
+            ctx.bindings.exit();
+            todo!()
+        }
+        Ex::Literal { literal: _ } => {
+            // no dependencies
+            ctx.mapping.insert(*expr, PlacementInfo::no_deps());
+        }
+        Ex::App { func, args } => {
+            // First, get the origin morphism that `func` defines. There are two cases:
+            //  1. the morphism exists and is already bound
+            //  2. the morphism was referred to by the program but does not exist or is not in scope
+            // If the function is e.g. a lambda, then the expression will have been brought into
+            // scope already. Therefore, it's safe to make an error of this directly.
+            let Some(func_origin) = ctx.funcs.get(**func) else {
+                return Err(miette!(
+                    labels = [
+                        LabeledSpan::at(ctx.sources.translate_span(func.span), "is not a function"),
+                        LabeledSpan::at(
+                            ctx.sources.translate_span(expr.span),
+                            "used in this application"
+                        )
+                    ],
+                    "application does not involve a function"
+                )
+                .with_source_code(ctx.sources.clone()));
+            };
+            let arg_origins: Vec<Origin> = args
+                .iter()
+                .map(|arg| -> miette::Result<Origin> {
+                    Ok(ctx
+                        .get_binding_placement(arg.inner, arg.span)
+                        .cloned()?
+                        .origin)
+                })
+                .try_collect()?;
+            let origin = func_origin.evaluate(&arg_origins);
+            ctx.mapping.insert(
+                *expr,
+                PlacementInfo {
+                    origin,
+                    location: None,
+                },
+            );
+        }
+        Ex::Field {
+            expr: field_expr,
+            field: _,
+        } => {
+            // It should be the case that if there's a problem with the referenced binding, then it
+            // won't be one of the KNF-generated ones.
+            let placement_info = ctx.get_binding_placement(field_expr.inner, expr.span)?;
+            ctx.mapping.insert(*expr, placement_info.clone());
+        }
+        Ex::Var { name } => {
+            let placement_info = ctx.get_binding_placement(*name, expr.span)?;
+            ctx.mapping.insert(*expr, placement_info.clone());
+        }
+    }
+
+    Ok(())
+}
+
+struct Ctx {
+    // Map bindings to their defining expressions
+    bindings: Bindings<PlacementInfo>,
+    // Map expressions to their placement information
+    mapping: ArenaMap<Idx<Ex>, PlacementInfo>,
+    resolver: Rodeo,
+    sources: Sources,
+    unique_param: usize,
+}
+impl Ctx {
+    fn new_param(&mut self) -> Spur {
+        let s = format!("#p{}", self.unique_param);
+        self.unique_param += 1;
+        self.resolver.get_or_intern(&s)
+    }
+    fn get_binding_placement_from_idx(&self, idx_ex: Idx<Ex>) -> miette::Result<&PlacementInfo> {
+        // Get the original PlacementInfo of expression that was bound to `name` in the current
+        // scope.
+        let Some(original_placement_info) = self.mapping.get(idx_ex) else {
+            panic!("{idx_ex:?} is not mapped");
+        };
+        Ok(original_placement_info)
+    }
+    fn get_binding_placement(&self, name: Spur, span: Span) -> miette::Result<&PlacementInfo> {
+        let Some(placement) = self.bindings.get(name) else {
+            return Err(miette!(
+                labels = vec![LabeledSpan::at(
+                    self.sources.translate_span(span),
+                    "referenced here"
+                )],
+                "no binding '{}' is in scope",
+                self.resolver.resolve(&name)
+            )
+            .with_source_code(self.sources.clone()));
+        };
+        Ok(placement)
+    }
 }
 
 // Functions have a type a -> b
@@ -81,18 +294,28 @@ pub struct Ctx {
 //  (f #x #y ...)
 // Important note: we do not allow projection, so .. -> (d, e) will have a single #(d, e) origin
 // that is output
+#[derive(Debug, Clone)]
 pub enum OriginExpr {
+    /// Origin variable
     Var(Spur),
+    /// Composition of some number of origin expressions
     Comp(Vec<OriginExpr>),
-    ///
+    /// Intersection between some number of origin expressions
     Isect(Vec<OriginExpr>),
     /// Origin is given by application of some parameter which has a function type
     /// Note that App(s, ...) implies Var(s)
     App(Spur, Vec<OriginExpr>),
 }
+#[derive(Debug, Clone)]
 pub struct FuncPlacement {
-    pub in_origins: Vec<Spur>,
+    /// Set of origin variables that the origin expression is quantified by
+    pub vars: Vec<Spur>,
     pub expr: OriginExpr,
+}
+impl FuncPlacement {
+    fn evaluate(&self, args_origins: &[Origin]) -> Origin {
+        todo!()
+    }
 }
 
 pub struct Bindings<T> {

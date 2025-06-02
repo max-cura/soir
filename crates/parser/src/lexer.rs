@@ -85,6 +85,7 @@ pub enum Token {
     Backslash,
     Pipe,
     Comma,
+    Backtick,
 
     // --- delimiters ---
     LeftParen,
@@ -139,6 +140,7 @@ impl Token {
             Token::Backslash => write!(w, "\\"),
             Token::Pipe => write!(w, "|"),
             Token::Comma => write!(w, ","),
+            Token::Backtick => write!(w, "`"),
             Token::LeftParen => write!(w, "("),
             Token::RightParen => write!(w, ")"),
             Token::Error(spur) => write!(w, "<ERROR:{}>", interner.resolve(spur)),
@@ -260,6 +262,7 @@ pub fn lexer<'s, 'r: 's>() -> impl Parser<
         .or(unit_literal)
         .or(string_literal)
         .labelled("literal");
+    // TODO: case parsing. I think we can use a sigil for delimiting constructors; perhaps (`)
     let ident_parser = keyword("if")
         .to(T![if])
         .or(keyword("then").to(T![then]))
@@ -293,6 +296,7 @@ pub fn lexer<'s, 'r: 's>() -> impl Parser<
         .or(just(".").to(T![.]))
         .or(just("|").to(T![|]))
         .or(just(",").to(T![,]))
+        .or(just("`").to(Token::Backtick))
         .or(just("\\").to(Token::Backslash))
         .or(just("(").to(Token::LeftParen))
         .or(just(")").to(Token::RightParen));

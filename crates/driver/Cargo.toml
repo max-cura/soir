@@ -4,16 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chumsky = { git = "https://github.com/zesterer/chumsky", rev = "ed0f695df586e39c93f1df28c52a2438eceddf51", features = ["pratt"] }
+# chumsky = "1.0.0-alpha.8"
+chumsky = { git = "https://github.com/zesterer/chumsky", rev = "ed0f695df586e39c93f1df28c52a2438eceddf51", features = ["nightly"] }
+# command-line arguments
 clap = { version = "4.5.37", features = ["derive"] }
+# string interning
 lasso = "0.7.3"
+# arena allocation
 la-arena = "0.3.1"
+# error handling
 miette = { version = "7.6.0", features = ["fancy"] }
 thiserror = "2.0.12"
+# logging
 tracing = "0.1.41"
 tracing-subscriber = { version ="0.3.19", features = ["env-filter"] }
+# other collections' equivalents to vec![]
+maplit = "1.0.2"
+# pretty printing is hard
+pretty = {version ="0.12.4", features = ["termcolor"]}
+
+# internal libraries
 telos-common = { path = "../common" }
 telos-parser = { path = "../parser" }
-either = "1.15.0"
-itertools = "0.14.0"
-maplit = "1.0.2"

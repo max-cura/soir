@@ -1,13 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
-use chumsky::extra;
 use la_arena::{Arena, Idx};
-use lasso::{Resolver, Rodeo, Spur};
-use std::fmt::Write;
+use lasso::{Rodeo, Spur};
 use telos_common::span::{Span, Spanned};
 use telos_parser::{
     lexer::LiteralToken,
-    parser::{Def, Expr, Item, OpExpr, Pat, print_pat},
+    parser::{Def, Expr, Item, OpExpr, Pat},
 };
 
 /// Match arm
@@ -56,87 +54,6 @@ pub enum Ex {
     },
     /// Variable reference
     Var { name: Spur },
-}
-
-pub fn print_ex(
-    ex: Idx<Ex>,
-    arena: &Arena<Ex>,
-    resolver: &impl Resolver,
-    out: &mut String,
-    indent: usize,
-) {
-    let ind = "  ".repeat(indent);
-    match &arena[ex] {
-        Ex::Match { expr, arms } => {
-            let _ = writeln!(out, "{ind}match {} in", resolver.resolve(expr));
-            for arm in arms {
-                let _ = write!(out, "| ");
-                print_pat(&arm.pat, resolver, out, indent + 1);
-                let _ = writeln!(out, " ->");
-                print_ex(arm.body.inner, arena, resolver, out, indent + 2);
-                let _ = writeln!(out);
-            }
-        }
-        Ex::Let { def, body } => {
-            let _ = writeln!(out, "{ind}let {} =", resolver.resolve(&def.name));
-            print_ex(def.expr.inner, arena, resolver, out, indent + 1);
-            let _ = writeln!(out);
-            let _ = write!(out, "{ind}in ");
-            print_ex(body.inner, arena, resolver, out, 0);
-            // let _ = writeln!(out);
-        }
-        Ex::LetRec { defs, body } => {
-            let _ = writeln!(out, "{ind}let rec");
-            for def in defs {
-                let _ = write!(out, "{ind}  {} = ", resolver.resolve(&def.name));
-                print_ex(def.expr.inner, arena, resolver, out, indent);
-                let _ = writeln!(out);
-            }
-            let _ = writeln!(out, "{ind}in");
-            print_ex(body.inner, arena, resolver, out, indent + 1);
-            let _ = writeln!(out);
-        }
-        Ex::Lam { params, body } => {
-            let _ = writeln!(
-                out,
-                "{ind}(\\{} ->",
-                params
-                    .iter()
-                    .map(|param| resolver.resolve(&param.inner))
-                    .intersperse(" ")
-                    .collect::<String>()
-            );
-            print_ex(body.inner, arena, resolver, out, 1);
-            let _ = writeln!(out);
-            let _ = write!(out, "{ind})");
-        }
-        Ex::Literal { literal } => {
-            let _ = write!(out, "{ind}");
-            let _ = literal.fmt(out, resolver);
-        }
-        Ex::App { func, args } => {
-            let _ = write!(
-                out,
-                "{ind}({} {})",
-                resolver.resolve(&func.inner),
-                args.iter()
-                    .map(|arg| resolver.resolve(&arg.inner))
-                    .intersperse(" ")
-                    .collect::<String>()
-            );
-        }
-        Ex::Field { expr, field } => {
-            let _ = write!(
-                out,
-                "{ind}{}.{}",
-                resolver.resolve(&expr.inner),
-                resolver.resolve(field)
-            );
-        }
-        Ex::Var { name } => {
-            let _ = write!(out, "{ind}{}", resolver.resolve(name));
-        }
-    }
 }
 
 struct KCtx {
@@ -192,7 +109,7 @@ pub fn k_norm_items(
     interner: Rodeo,
     expr_arena: Arena<Expr>,
 ) -> (
-    Vec<(Span, Spur, Vec<Spanned<Spur>>, Idx<Ex>)>,
+    Vec<(Span, Spur, Vec<Spanned<Spur>>, Spanned<Idx<Ex>>)>,
     Rodeo,
     Arena<Ex>,
 ) {
@@ -214,7 +131,7 @@ pub fn k_norm_items(
             span,
             name.inner,
             params,
-            rctx.borrow_mut().alloc_ex(body.inner),
+            Spanned::new(rctx.borrow_mut().alloc_ex(body.inner), body.span),
         ));
     }
     let KCtx {
@@ -375,7 +292,9 @@ fn k_norm(input: Spanned<Idx<Expr>>, ctx: Rc<RefCell<KCtx>>) -> Spanned<Ex> {
                             )
                         }
                     }
-                    bind(vec![], args.clone(), ctx, input_span, f)
+                    let mut args_rev = args.clone();
+                    args_rev.reverse();
+                    bind(vec![], args_rev, ctx, input_span, f)
                 }),
             )
         }

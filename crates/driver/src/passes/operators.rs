@@ -241,12 +241,12 @@ pub fn resolve_operators<R: Resolver>(
             continue;
         };
         if op_seq.len() == 1
-            && let Some(OpExpr::Expr(e)) = op_seq.first()
+            && let Some(OpExpr::Expr(_e)) = op_seq.first()
         {
             // tracing::trace!("1-length op_seq: {e:?}");
             continue;
         }
-        let mut op_seq = std::mem::take(op_seq).into_iter();
+        let mut op_seq = TokenSource::new(std::mem::take(op_seq));
 
         let Some(new_root_expr) = pratt(&mut op_seq, &mut queue, &mut ctx, 0)? else {
             unreachable!("expected OpSeq to be non-empty")
@@ -260,14 +260,32 @@ pub fn resolve_operators<R: Resolver>(
 
     Ok(())
 }
+
+struct TokenSource {
+    inner: Vec<OpExpr>,
+}
+impl TokenSource {
+    pub fn new(mut src: Vec<OpExpr>) -> Self {
+        src.reverse();
+        Self { inner: src }
+    }
+    pub fn next(&mut self) -> Option<OpExpr> {
+        // tracing::debug!("next = {:?}", self.inner.last());
+        self.inner.pop()
+    }
+    pub fn peek(&mut self) -> Option<OpExpr> {
+        // tracing::debug!("peek = {:?}", self.inner.last());
+        self.inner.last().cloned()
+    }
+}
+
 // The actual Pratt parsing machinery
 fn pratt<R: Resolver>(
-    base_op_seq: &mut dyn Iterator<Item = OpExpr>,
+    op_seq: &mut TokenSource,
     queue: &mut Vec<Spanned<Idx<Expr>>>,
     ctx: &mut OperatorCtx<R>,
     min_power: u32,
 ) -> Result<Option<Spanned<Expr>>, OperatorError> {
-    let mut op_seq = base_op_seq.peekable();
     let mut lhs = match op_seq.next() {
         // Case: expression atom
         Some(OpExpr::Expr(expr)) => {
@@ -276,6 +294,7 @@ fn pratt<R: Resolver>(
         }
         // Case: prefix operator
         Some(OpExpr::Op { name, is_quot: _ }) => {
+            tracing::debug!("lhs-recurse: prefix {}", ctx.resolver.resolve(&name));
             let Some((power, impl_)) = ctx.prefix_info(*name) else {
                 return Err(OperatorError::NotXFix {
                     operator: ctx.resolver.resolve(&name).to_string(),
@@ -283,12 +302,13 @@ fn pratt<R: Resolver>(
                     op_span: ctx.sources.translate_span(name.span),
                 });
             };
-            let Some(rhs) = pratt(&mut op_seq, queue, ctx, power)? else {
+            let Some(rhs) = pratt(op_seq, queue, ctx, power)? else {
                 return Err(OperatorError::ExpectedExpression {
                     operator: ctx.resolver.resolve(&name).to_owned(),
                     op_span: ctx.sources.translate_span(name.span),
                 });
             };
+            tracing::debug!("lhs-recurse: done");
             let combined_span = name.span.union(rhs.span);
             Spanned::new(
                 Expr::App {
@@ -305,7 +325,7 @@ fn pratt<R: Resolver>(
     };
 
     loop {
-        let (operator, _is_quot) = match op_seq.next() {
+        let (operator, _is_quot) = match op_seq.peek() {
             Some(OpExpr::Op { name, is_quot }) => (name, is_quot),
             None => break, // end of input
             Some(OpExpr::Expr(expr)) => {
@@ -319,6 +339,7 @@ fn pratt<R: Resolver>(
             if power < min_power {
                 break;
             }
+            op_seq.next();
             let combined_span = lhs.span.union(operator.span);
             lhs = Spanned::new(
                 Expr::App {
@@ -351,7 +372,8 @@ fn pratt<R: Resolver>(
         if l_power < min_power {
             break;
         }
-        let Some(rhs) = pratt(&mut op_seq, queue, ctx, r_power)? else {
+        op_seq.next();
+        let Some(rhs) = pratt(op_seq, queue, ctx, r_power)? else {
             return Err(OperatorError::ExpectedExpression {
                 operator: ctx.resolver.resolve(&operator).to_owned(),
                 op_span: ctx.sources.translate_span(operator.span),

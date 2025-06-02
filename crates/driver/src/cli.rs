@@ -40,13 +40,15 @@ pub struct BuildArgs {
     pub cg_output_file: PathBuf,
 
     #[arg(long)]
-    pub emit_tokens: bool,
+    pub print_tokens: bool,
     #[arg(long)]
-    pub emit_initial_ast: bool,
+    pub print_initial_ast: bool,
     #[arg(long)]
-    pub emit_ast_after_operator_resolution: bool,
+    pub debug_operator_parsing: bool,
     #[arg(long)]
-    pub emit_knf: bool,
+    pub print_knf: bool,
+    #[arg(long)]
+    pub print_origins: bool,
 }
 
 pub fn run() {
