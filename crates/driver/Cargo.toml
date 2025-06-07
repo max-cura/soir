@@ -21,7 +21,9 @@ tracing-subscriber = { version ="0.3.19", features = ["env-filter"] }
 # other collections' equivalents to vec![]
 maplit = "1.0.2"
 # pretty printing is hard
-pretty = {version ="0.12.4", features = ["termcolor"]}
+pretty = { version ="0.12.4", features = ["termcolor"] }
+# graph manipulation
+petgraph = { version = "0.8.1", features = ["rayon"] }
 
 # internal libraries
 telos-common = { path = "../common" }

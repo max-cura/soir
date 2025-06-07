@@ -6,7 +6,10 @@ use maplit::hashmap;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::{cli::BuildArgs, passes::origin::Placement};
+use crate::{
+    cli::BuildArgs,
+    passes::origin::{ColorGenerator, Placement},
+};
 use telos_common::{
     source::{Source, SourceError, SourceId, Sources},
     span::Spanned,
@@ -188,7 +191,7 @@ pub fn build(build: BuildArgs) {
 
     if build.print_knf {
         eprintln!();
-        eprintln!("--print-knf");
+        eprintln!("## {:#<117}", "--print-knf ");
         for (_, name, params, body) in &k_items {
             eprintln!(
                 "{} {} =",
@@ -205,37 +208,48 @@ pub fn build(build: BuildArgs) {
             crate::passes::origin::PrintCtx {
                 resolver: &interner,
                 arena: &ex_arena,
-                width: 120,
+                width: 80,
                 ex_map: None,
+                color_gen: std::cell::RefCell::new(ColorGenerator::new()),
             }
             .pretty_print(**body);
+            eprintln!();
         }
     }
 
     let mut n = |n| interner.get_or_intern(n);
     let mut builtins = hashmap![];
-    use crate::passes::origin::OriginExpr as OE;
+    let mut builtins2 = hashmap![];
+    use crate::codegen::Value;
+    use crate::passes::origin::{Loc, LocExpr, OriginExpr as OE};
     {
+        let m = n("__builtin_add");
         let a = n("#badd0_lhs");
         let b = n("#badd0_rhs");
         builtins.insert(
-            n("__builtin_add"),
+            m,
             Placement {
                 expr: OE::Isect(vec![OE::loc_var(a), OE::loc_var(b)]),
                 quantifiers: vec![a, b],
+                location: None,
             },
         );
+        builtins2.insert(m, Value::Func(m));
     }
     {
+        let m = n("__fake_read");
         let k = n("#fread0_key");
         let g = n("fread");
+        let gfn = OE::Loc(Loc::Gen(g));
         builtins.insert(
-            n("__fake_read"),
+            m,
             Placement {
-                expr: OE::Concat(vec![OE::loc_var(k), OE::loc_gen(g)]),
+                expr: OE::Concat(vec![OE::loc_var(k), gfn]),
                 quantifiers: vec![k],
+                location: Some(LocExpr::Gen(g)),
             },
         );
+        builtins2.insert(m, Value::Func(m));
     }
     let (interner, f_map) = match crate::passes::origin::analyze_items(
         &k_items,
@@ -255,8 +269,8 @@ pub fn build(build: BuildArgs) {
 
     if build.print_origins {
         eprintln!();
-        eprintln!("--print-origins");
-        for (_, name, params, body) in k_items {
+        eprintln!("## {:#<117}", "--print-origins ");
+        for (_, name, params, body) in &k_items {
             eprintln!(
                 "{} {} =",
                 interner.resolve(&name),
@@ -272,13 +286,23 @@ pub fn build(build: BuildArgs) {
             crate::passes::origin::PrintCtx {
                 resolver: &interner,
                 arena: &ex_arena,
-                width: 120,
+                width: 80,
                 ex_map: Some(&f_map),
+                color_gen: std::cell::RefCell::new(ColorGenerator::new()),
             }
-            .pretty_print(*body);
+            .pretty_print(**body);
             eprintln!();
         }
     }
+
+    crate::codegen::run(
+        &k_items,
+        interner,
+        &mut ex_arena,
+        &f_map,
+        &builtins2,
+        &sources,
+    )
 }
 
 pub fn dump_errors<E: std::error::Error + Diagnostic + Send + Sync + 'static>(errors: Vec<E>) -> ! {

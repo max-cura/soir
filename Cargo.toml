@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/parser", "crates/driver", "crates/common"]
+members = ["crates/parser", "crates/driver", "crates/common", "detest", "detest-proto"]

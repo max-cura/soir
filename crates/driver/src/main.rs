@@ -3,15 +3,15 @@
 #![feature(iterator_try_collect)]
 #![feature(impl_trait_in_bindings)]
 #![feature(iter_intersperse)]
-
-use tracing_subscriber::prelude::*;
+#![feature(array_windows)]
 
 pub mod cli;
+pub mod codegen;
 pub mod driver;
-
 pub mod passes;
 
 pub fn main() {
+    use tracing_subscriber::prelude::*;
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()

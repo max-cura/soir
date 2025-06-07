@@ -1,11 +1,13 @@
-use std::{collections::HashMap, iter::once};
+//! Origin flow analysis.
+
+use std::{cell::RefCell, collections::HashMap, iter::once};
 
 use la_arena::{Arena, ArenaMap, Idx};
 use lasso::{Rodeo, Spur};
 use miette::{LabeledSpan, miette};
 use pretty::{
     RcDoc,
-    termcolor::{ColorSpec, StandardStream},
+    termcolor::{Color, ColorSpec, StandardStream},
 };
 use telos_common::{
     source::Sources,
@@ -60,23 +62,43 @@ impl<T> Bindings<T> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub enum Loc {
     /// This location describes the implied location of the value of some computation
     Var(Spur),
     /// This is a new location that is _dynamically derived_ from some (set of) values.
     Gen(Spur),
-    /// Dynamically determined location
-    Dynamic(Spur, Spur),
-    // /// This location describes the implied location of the value of some parameter to a function
-    // Value(Idx<Ex>),
+    /// This value is available everywhere
+    Anywhere,
 }
 impl std::fmt::Debug for Loc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Loc::Var(spur) => write!(f, "Var({:?})", spur),
-            Loc::Gen(..) => write!(f, "Gen(..)"),
-            Loc::Dynamic(a, b) => write!(f, "Dynamic({:?}, {:?})", a, b),
+            Loc::Gen(spur) => write!(f, "Gen({:?})", spur),
+            Loc::Anywhere => write!(f, "Anywhere"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum LocExpr {
+    Var(Spur),
+    Gen(Spur),
+    App(Spur, Vec<OriginExpr>),
+    Root,
+}
+impl PartialEq for LocExpr {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Var(a), Self::Var(b)) => a == b,
+            (Self::Gen(a), Self::Gen(b)) => a == b,
+            (Self::Root, Self::Root) => true,
+            (Self::App(..), Self::App(..)) => {
+                tracing::warn!("ignored LocExpr::App comparison");
+                false
+            }
+            _ => false,
         }
     }
 }
@@ -92,8 +114,141 @@ pub enum OriginExpr {
     /// Application of some location _variable_ (if the location were known, the application can be
     /// inlined).
     App(Spur, Vec<OriginExpr>),
-    /// The value is available everywhere.
-    Constant,
+}
+impl OriginExpr {
+    pub fn normalize(&self) -> OriginExpr {
+        match self {
+            OriginExpr::Loc(_) => self.clone(),
+            // Assume that this happens post-substitution, so there's no way to resolve this
+            // application any further. However, we can normalize the parameters.
+            OriginExpr::App(f, origin_exprs) => {
+                OriginExpr::App(*f, origin_exprs.iter().map(Self::normalize).collect())
+            }
+            OriginExpr::Concat(origin_exprs) => {
+                // Simplifications: flattening
+                // Key point: this converges immediately
+                let simplified_origin_exprs: Vec<_> =
+                    origin_exprs.iter().map(Self::normalize).collect();
+                let mut flattened_origin_exprs = vec![];
+                for oe in simplified_origin_exprs {
+                    if let Self::Concat(nest) = oe {
+                        flattened_origin_exprs.extend(nest);
+                    } else if let Self::Loc(Loc::Anywhere) = oe {
+                        // skip
+                    } else {
+                        flattened_origin_exprs.push(oe);
+                    }
+                }
+                // In theory, we could also deduplicate here; however, that causes problems because
+                // consistency does not imply equality, and it's not really clear which origins we
+                // wish to retain
+                OriginExpr::Concat(flattened_origin_exprs)
+            }
+            OriginExpr::Isect(origin_exprs) => {
+                // Simplifications: flattening and intersection
+                // Key point: these converges immediately, even under composition
+
+                // Flattening: (a ⨅ b) ⨅ (c ⨅ d) = a ⨅ b ⨅ c ⨅ d
+                let simplified_origin_exprs: Vec<_> =
+                    origin_exprs.iter().map(Self::normalize).collect();
+                let mut flattened_origin_exprs = vec![];
+                for oe in simplified_origin_exprs {
+                    if let Self::Isect(nest) = oe {
+                        flattened_origin_exprs.extend(nest);
+                    } else {
+                        flattened_origin_exprs.push(oe);
+                    }
+                }
+                // tracing::debug!("Isect : flattened = {flattened_origin_exprs:?}");
+
+                // Intersection: go element by element and try to run intersection.
+                // The key point is that there may be some places where we don't do normalization
+
+                // First, we need to describe the current set of valid locations; we initialize it
+                // to ⊤, and let it be implicitly a `Concat`.
+                let mut valid_set: Option<Vec<OriginExpr>> = None;
+                for item in flattened_origin_exprs {
+                    // Guarantees: `item` is not an Isect
+                    let mut restriction_union = match item {
+                        OriginExpr::Loc(loc) => {
+                            vec![OriginExpr::Loc(loc)]
+                        }
+                        OriginExpr::Concat(origin_exprs) => {
+                            // standard restriction
+                            origin_exprs
+                        }
+                        app @ OriginExpr::App(_, _) => {
+                            // let f = \y -> \g -> g y
+                            // g : ∀y. g∘y
+                            // g has no intrinsic location (as it is not a builtin), so we must
+                            // endeavour to determine for ourselves. thus, it will fall to
+                            // `normalize()`. Then this should be conservatively estimated to be
+                            // available at the union of the arguments' origins
+                            vec![app]
+                        }
+                        OriginExpr::Isect(_) => {
+                            unreachable!("post-flattening Isect OE contains Isects")
+                        }
+                    };
+                    if let Some(valid_set_) = valid_set {
+                        let mut valid_set_new = vec![];
+                        for oe in &valid_set_ {
+                            // oe is either Isect, App, or Loc
+                            // we previously normalized origin_exprs, so that rules out Isect as well
+                            // thus: App or Loc
+                            for item in &restriction_union {
+                                match (&oe, item) {
+                                    (OriginExpr::Loc(Loc::Anywhere), _) => {
+                                        unreachable!("Loc::Anywhere in valid_set")
+                                    }
+                                    // skip - if it's available everywhere, it doesn't restrict the
+                                    // valid set
+                                    // XXX: nvm, it seems like 'anywhere' doesn't have good semantics rn
+                                    (&a, OriginExpr::Loc(Loc::Anywhere)) => {
+                                        // Anywhere only can come from Isect, where it has no effect
+                                        // Don't have to worry about the weird Concat(Anywhere, ...) case
+                                        valid_set_new.push(a.clone());
+                                    }
+                                    (
+                                        OriginExpr::Loc(Loc::Var(a)),
+                                        OriginExpr::Loc(Loc::Var(b)),
+                                    ) if a == b => valid_set_new.push(oe.clone()),
+                                    (
+                                        OriginExpr::Loc(Loc::Gen(a)),
+                                        OriginExpr::Loc(Loc::Gen(b)),
+                                    ) if a == b => valid_set_new.push(oe.clone()),
+                                    (OriginExpr::Loc(_), OriginExpr::Loc(_)) => continue,
+                                    (OriginExpr::Loc(_), OriginExpr::App(_, _)) => continue,
+                                    (OriginExpr::App(_, _), OriginExpr::Loc(_)) => continue,
+                                    (OriginExpr::App(_, _), OriginExpr::App(_, _)) => continue,
+                                    _ => unreachable!(),
+                                }
+                            }
+                        }
+                        // tracing::debug!(
+                        // "{valid_set_:?} restricted by {restriction_union:?} = {valid_set_new:?}"
+                        // );
+                        valid_set = Some(valid_set_new);
+                    } else {
+                        restriction_union
+                            .retain(|oe| !matches!(oe, OriginExpr::Loc(Loc::Anywhere)));
+                        valid_set = Some(restriction_union);
+                    }
+                }
+                let Some(valid_set) = valid_set else {
+                    panic!("interseciton {origin_exprs:?} has empty valid_set (None)");
+                };
+                // if valid_set.is_empty() {
+                //     panic!("intersection {origin_exprs:?} has empty valid_set ([])")
+                // }
+                if valid_set.len() == 1 {
+                    valid_set[0].clone()
+                } else {
+                    OriginExpr::Concat(valid_set)
+                }
+            }
+        }
+    }
 }
 impl OriginExpr {
     pub fn loc_var(n: Spur) -> Self {
@@ -107,14 +262,21 @@ impl OriginExpr {
         substitutions: &HashMap<Spur, &Placement>,
         base_quantification: &Vec<Spur>,
         ctx: &mut Ctx,
+        replace_gen: Option<(Spur, Spur)>,
     ) {
         match self {
             OriginExpr::Loc(Loc::Gen(gn)) => {
                 // Generator location should be swapped out with the location of the current
                 // application (since substitution implies application)
-                *self = Self::Loc(Loc::Gen(ctx.loc_gen(*gn)));
+                if let Some((replace, with)) = replace_gen
+                    && *gn == replace
+                {
+                    *self = Self::Loc(Loc::Gen(with));
+                } else {
+                    *self = Self::Loc(Loc::Gen(ctx.loc_gen(*gn)));
+                }
             }
-            OriginExpr::Loc(_) | OriginExpr::Constant => (),
+            OriginExpr::Loc(_) => (),
             OriginExpr::Concat(origin_exprs)
             | OriginExpr::Isect(origin_exprs)
             | OriginExpr::App(_, origin_exprs) => {
@@ -125,7 +287,7 @@ impl OriginExpr {
                             *expr = subst.expr.clone();
                         }
                     } else {
-                        expr.substitute(substitutions, base_quantification, ctx);
+                        expr.substitute(substitutions, base_quantification, ctx, replace_gen);
                     }
                 })
             }
@@ -144,15 +306,13 @@ impl OriginExpr {
                     .map(|arg| Placement {
                         expr: arg.clone(),
                         quantifiers: base_quantification.clone(),
+                        location: None,
                     })
                     .collect();
                 let mut placement = func_placement.clone();
                 placement.substitute(&placed_args, ctx);
                 *self = placement.expr;
                 // XXX: should be safe to discard `placement`'s quantifiers
-
-                // return early; our work is done
-                return;
             }
         }
     }
@@ -171,27 +331,22 @@ pub struct Placement {
     /// Specifically, variables are specified from innermost to outermost scope, in reverse
     /// parameter order.
     pub quantifiers: Vec<Spur>,
+    pub location: Option<LocExpr>,
 }
 impl Placement {
     pub fn param(loc_var: Spur) -> Self {
         Self {
             expr: OriginExpr::Loc(Loc::Var(loc_var)),
             quantifiers: vec![],
+            location: Some(LocExpr::Var(loc_var)),
         }
     }
     pub fn literal() -> Self {
         Self {
-            expr: OriginExpr::Constant,
+            expr: OriginExpr::Loc(Loc::Anywhere),
             quantifiers: vec![],
+            location: Some(LocExpr::Root),
         }
-    }
-    pub fn add_quantifiers(self, rhs: impl IntoIterator<Item = Spur>) -> Self {
-        let Self {
-            expr,
-            mut quantifiers,
-        } = self;
-        quantifiers.extend(rhs.into_iter());
-        Self { expr, quantifiers }
     }
     pub fn substitute(&mut self, substitutions_vec: &Vec<Placement>, ctx: &mut Ctx) {
         if self.quantifiers.len() < substitutions_vec.len() {
@@ -201,6 +356,14 @@ impl Placement {
             );
         }
 
+        let replace_gen = if let Some(LocExpr::Gen(gfn)) = self.location {
+            let new_loc = ctx.loc_gen(gfn);
+            self.location = Some(LocExpr::Gen(new_loc));
+            Some((gfn, new_loc))
+        } else {
+            None
+        };
+
         let drain_begin = self.quantifiers.len() - substitutions_vec.len();
         let substitutions = self
             .quantifiers
@@ -209,9 +372,97 @@ impl Placement {
             .zip(substitutions_vec.iter())
             .collect();
 
-        self.expr.substitute(&substitutions, &self.quantifiers, ctx);
+        self.expr
+            .substitute(&substitutions, &self.quantifiers, ctx, replace_gen);
 
         self.merge_quantifiers(substitutions_vec);
+
+        if replace_gen.is_none() {
+            // If the subsequent location isn't across a network boundary, then we need to figure
+            // out what the candidates are
+            // This means that we need to actively calculate and normalize the origins on all sides
+            // If all sides are the same, then just run with that
+            // Otherwise, find the intersection, and pick the most commonly repeated location
+            // This is a kludge, but we'll live
+            // tracing::debug!("pre-normalization = {:?}", self.expr);
+            let normalized = self.expr.normalize();
+            // tracing::debug!("normalized = {normalized:?}");
+            let candidates = match normalized {
+                OriginExpr::Concat(origin_exprs) => origin_exprs,
+                OriginExpr::Isect(origin_exprs) => {
+                    unreachable!("normalize() returned Isect({origin_exprs:?})");
+                }
+                x => vec![x],
+            };
+            #[derive(Debug)]
+            enum Candidate {
+                Loc(Loc),
+                App(Spur, Vec<OriginExpr>),
+            }
+            impl PartialEq for Candidate {
+                fn eq(&self, other: &Self) -> bool {
+                    match (self, other) {
+                        (Self::Loc(a), Self::Loc(b)) => match (a, b) {
+                            (Loc::Var(a), Loc::Var(b)) => a == b,
+                            (Loc::Gen(a), Loc::Gen(b)) => a == b,
+                            (Loc::Anywhere, _) | (_, Loc::Anywhere) => unreachable!(),
+                            _ => false,
+                        },
+                        _ => false,
+                    }
+                }
+            }
+            let candidates: Vec<_> = candidates
+                .into_iter()
+                .map(|oe| match oe {
+                    OriginExpr::Loc(loc) => Candidate::Loc(loc),
+                    OriginExpr::Concat(_) => unreachable!(),
+                    OriginExpr::Isect(_) => unreachable!(),
+                    OriginExpr::App(spur, origin_exprs) => Candidate::App(spur, origin_exprs),
+                })
+                .collect();
+            if candidates.is_empty() {
+                self.location = Some(LocExpr::Root);
+            } else {
+                // pick 1
+                let mut counts: Vec<(Candidate, usize)> = vec![];
+                for candidate in candidates {
+                    let mut found = false;
+                    for c in &mut counts {
+                        if candidate == c.0 {
+                            c.1 += 1;
+                            assert!(!found);
+                            found = true;
+                        }
+                    }
+                    let initial = if matches!(candidate, Candidate::Loc(_)) {
+                        1
+                    } else {
+                        0
+                    };
+                    counts.push((candidate, initial));
+                }
+                // tracing::debug!("counts = {counts:?}");
+                let (candidate, count) =
+                    counts.into_iter().max_by_key(|(_, count)| *count).unwrap();
+                if count == 0 {
+                    // a bit hacky, but the current location system can't handle deferred locations
+                    self.location = Some(LocExpr::Root);
+                }
+                match candidate {
+                    Candidate::Loc(loc) => {
+                        self.location = Some(match loc {
+                            Loc::Var(spur) => LocExpr::Var(spur),
+                            Loc::Gen(spur) => LocExpr::Gen(spur),
+                            Loc::Anywhere => unreachable!(),
+                        });
+                    }
+                    Candidate::App(f, oes) => {
+                        self.location = Some(LocExpr::App(f, oes));
+                    }
+                }
+            }
+        }
     }
     pub fn merge_quantifiers(&mut self, placements: &Vec<Placement>) {
         // precondition: among self and substitutions.values(), there is one `quantifiers` for
@@ -358,6 +609,7 @@ fn analyze_expr(
             let mut placement = Placement {
                 expr: placement_expr,
                 quantifiers: expr_placement.quantifiers,
+                location: None,
             };
             placement.merge_quantifiers(&arm_placements);
             Ok(ctx.place_expr(*expr, placement))
@@ -381,9 +633,11 @@ fn analyze_expr(
                 loc_vars.push(loc_var);
                 ctx.bindings.insert(**param, Placement::param(loc_var));
             }
-            let body_placement = analyze_expr(*body, arena, ctx)?;
+            let mut body_placement = analyze_expr(*body, arena, ctx)?;
             ctx.bindings.exit();
-            Ok(ctx.place_expr(*expr, body_placement.add_quantifiers(loc_vars)))
+            body_placement.quantifiers.extend(loc_vars);
+            body_placement.location = Some(LocExpr::Root);
+            Ok(ctx.place_expr(*expr, body_placement))
         }
         Ex::Literal { literal: _ } => Ok(ctx.place_expr(*expr, Placement::literal())),
         Ex::App { func, args } => {
@@ -410,45 +664,45 @@ fn analyze_expr(
 
 type PrettyDoc<'a> = RcDoc<'a, ColorSpec>;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct PrintCtx<'a> {
     pub resolver: &'a Rodeo,
     pub arena: &'a Arena<Ex>,
     pub width: usize,
     pub ex_map: Option<&'a ArenaMap<Idx<Ex>, Placement>>,
+    pub color_gen: RefCell<ColorGenerator>,
 }
 impl PrintCtx<'_> {
     fn print_origin_expr(&self, expr: &OriginExpr) -> PrettyDoc {
-        RcDoc::text("(")
-            .append(match expr {
-                OriginExpr::Loc(loc) => match loc {
-                    Loc::Var(spur) => RcDoc::as_string(self.resolver.resolve(spur)),
-                    Loc::Gen(gn) => RcDoc::as_string(format!("#G{}", self.resolver.resolve(&gn))),
-                    Loc::Dynamic(gn, inst) => RcDoc::as_string(format!(
-                        "#G{}_{}",
-                        self.resolver.resolve(&gn),
-                        self.resolver.resolve(&inst)
-                    )),
-                },
-                OriginExpr::Concat(origin_exprs) => RcDoc::intersperse(
+        match expr {
+            OriginExpr::Loc(loc) => match loc {
+                Loc::Var(spur) => RcDoc::as_string(self.resolver.resolve(spur)),
+                Loc::Gen(gn) => RcDoc::as_string(format!("#G{}", self.resolver.resolve(&gn))),
+                Loc::Anywhere => RcDoc::text("⊤"),
+            },
+            OriginExpr::Concat(origin_exprs) => RcDoc::text("(")
+                .append(RcDoc::intersperse(
                     origin_exprs.iter().map(|oe| self.print_origin_expr(oe)),
                     RcDoc::text("⨆"),
-                ),
-                OriginExpr::Isect(origin_exprs) => RcDoc::intersperse(
+                ))
+                .append(RcDoc::text(")")),
+            OriginExpr::Isect(origin_exprs) => RcDoc::text("(")
+                .append(RcDoc::intersperse(
                     origin_exprs.iter().map(|oe| self.print_origin_expr(oe)),
                     RcDoc::text("⨅"),
-                ),
-                OriginExpr::App(spur, origin_exprs) => {
+                ))
+                .append(RcDoc::text(")")),
+            OriginExpr::App(spur, origin_exprs) => RcDoc::text("(")
+                .append(
                     RcDoc::as_string(self.resolver.resolve(spur))
                         .append(RcDoc::text("∘"))
                         .append(RcDoc::intersperse(
                             origin_exprs.iter().map(|oe| self.print_origin_expr(oe)),
                             RcDoc::text(","),
-                        ))
-                }
-                OriginExpr::Constant => RcDoc::text("ε"),
-            })
-            .append(RcDoc::text(")"))
+                        )),
+                )
+                .append(RcDoc::text(")")),
+        }
     }
     fn print_placement(&self, placement: &Placement) -> PrettyDoc {
         RcDoc::text("∀")
@@ -461,16 +715,28 @@ impl PrintCtx<'_> {
             ))
             .append(".")
             .append(self.print_origin_expr(&placement.expr))
+            .append("@")
+            .append(match &placement.location {
+                Some(loc) => match loc {
+                    LocExpr::Root => RcDoc::text("ε"),
+                    x => self.print_origin_expr(&match x {
+                        LocExpr::Var(spur) => OriginExpr::Loc(Loc::Var(*spur)),
+                        LocExpr::Gen(spur) => OriginExpr::Loc(Loc::Gen(*spur)),
+                        LocExpr::App(spur, origin_exprs) => {
+                            OriginExpr::App(*spur, origin_exprs.clone())
+                        }
+                        LocExpr::Root => unreachable!(),
+                    }),
+                },
+                None => PrettyDoc::text("??").annotate(ColorSpec::new().set_bold(true).clone()),
+            })
     }
-    fn annotate(&self, idx: Idx<Ex>) -> PrettyDoc {
+    fn annotate(&self, idx: Idx<Ex>, color: Color) -> PrettyDoc {
         if let Some(ex_map) = self.ex_map {
             RcDoc::text(":")
                 .append(
-                    self.print_placement(&ex_map[idx]).annotate(
-                        ColorSpec::new()
-                            .set_fg(Some(pretty::termcolor::Color::Cyan))
-                            .clone(),
-                    ),
+                    self.print_placement(&ex_map[idx])
+                        .annotate(ColorSpec::new().set_fg(Some(color)).clone()),
                 )
                 .group()
         } else {
@@ -499,7 +765,10 @@ impl PrintCtx<'_> {
         }
     }
     fn print_idx(&self, ex: Idx<Ex>) -> PrettyDoc {
-        self.print_idx_inner(ex).append(self.annotate(ex))
+        let color = self.color_gen.borrow_mut().next();
+        self.print_idx_inner(ex)
+            .annotate(ColorSpec::new().set_fg(Some(color)).clone())
+            .append(self.annotate(ex, color))
     }
     fn print_idx_inner(&self, ex: Idx<Ex>) -> PrettyDoc {
         match &self.arena[ex] {
@@ -532,17 +801,17 @@ impl PrintCtx<'_> {
                     .append(RcDoc::as_string(self.resolver.resolve(&def.name)))
                     .append(RcDoc::line())
                     .group()
-                    .append(
-                        RcDoc::text("=")
-                            .append(RcDoc::line())
-                            .append(self.print_idx(*def.expr))
-                            .append(RcDoc::line())
-                            .append(RcDoc::text("in"))
-                            .group()
-                            .nest(4)
-                            .append(RcDoc::line_())
-                            .append(self.print_idx(**body).nest(4)),
-                    )
+                    .append(RcDoc::text("="))
+                    .append(RcDoc::line())
+                    .append(self.print_idx(*def.expr))
+                    .append(RcDoc::line())
+                    .append(RcDoc::text("in"))
+                    .group()
+                    .append(RcDoc::line())
+                    // .nest(4)
+                    // )
+                    .append(self.print_idx(**body).group().nest(4))
+                    .append(RcDoc::line_())
             }
             Ex::LetRec { defs: _, body: _ } => {
                 todo!("unimplemented")
@@ -559,7 +828,9 @@ impl PrintCtx<'_> {
                     .append(RcDoc::line())
                     .append(RcDoc::text("->"))
                     .group()
+                    .append(RcDoc::line())
                     .append(self.print_idx(**body).nest(4))
+                    .append(RcDoc::line())
                     .group()
             }
             Ex::Literal { literal } => {
@@ -598,5 +869,58 @@ impl PrintCtx<'_> {
                 StandardStream::stderr(pretty::termcolor::ColorChoice::Always),
             )
             .unwrap();
+    }
+}
+
+// From https://docs.rs/ariadne/latest/src/ariadne/draw.rs.html.
+
+/// A type that can generate distinct 8-bit colors.
+#[derive(Debug, Copy, Clone)]
+pub struct ColorGenerator {
+    state: [u16; 3],
+
+    min_brightness: f32,
+}
+impl Default for ColorGenerator {
+    fn default() -> Self {
+        Self::from_state([30000, 15000, 35000], 0.5)
+    }
+}
+impl ColorGenerator {
+    /// Create a new [`ColorGenerator`] with the given pre-chosen state.
+    ///
+    /// The minimum brightness can be used to control the colour brightness (0.0 - 1.0). The default is 0.5.
+
+    pub fn from_state(state: [u16; 3], min_brightness: f32) -> Self {
+        Self {
+            state,
+            min_brightness: min_brightness.max(0.0).min(1.0),
+        }
+    }
+
+    /// Create a new [`ColorGenerator`] with the default state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Generate the next colour in the sequence.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Color {
+        for i in 0..3 {
+            // magic constant, one of only two that have this property!
+            self.state[i] = (self.state[i] as usize).wrapping_add(40503 * (i * 4 + 1130)) as u16;
+        }
+
+        Color::Ansi256(
+            16 + ((self.state[2] as f32 / 65535.0 * (1.0 - self.min_brightness)
+                + self.min_brightness)
+                * 5.0
+                + (self.state[1] as f32 / 65535.0 * (1.0 - self.min_brightness)
+                    + self.min_brightness)
+                    * 30.0
+                + (self.state[0] as f32 / 65535.0 * (1.0 - self.min_brightness)
+                    + self.min_brightness)
+                    * 180.0) as u8,
+        )
     }
 }

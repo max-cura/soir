@@ -1,35 +1,17 @@
--- leq :: Int -> Int -> Bool ;;
--- leq a b = __builtin_leq a b ;;
-
--- other_var = "world" ;;
-
 infixl 8 + __builtin_add ;;
 infixl 10 * __builtin_mul ;;
 unaryl 12 - __builtin_negate ;;
 
 test a = a + 13 ;;
 test2 = __fake_read 49 ;;
-test3 = let fr = \c -> __fake_read c in (fr 0) + (fr 1) ;;
+test3 =
+  let fr = \c -> __fake_read c in
+    (fr 0) + (fr 1) ;;
+test4 =
+  let a = __fake_read 0 in
+    let b = \c -> a + c in b;;
+test5 =
+  let a = __fake_read 0 in
+    (__fake_read ("one" + a))
+    + (__fake_read ("two" + a)) ;;
 
--- var = leq (a->field) 0 b true (c d e) ;;
--- tmp = -3 * 9 + 4 + 5;;
--- pri = match 12 in
--- 	| 12 -> hi
--- 	| otherwise -> otherwise ;;
-
--- main = let var = other_var in
--- 	 match x in
--- 		| `Just x -> (match -3 <= 4 in
--- 			| true -> "woah"
--- 			| false -> "hi")
--- 		| `Nothing -> var
--- ;;
-
--- Option.unwrap_or x y =
--- 	match x in
--- 		| `Just x2 -> x2
--- 		| `Nothing -> (\yy -> yy) y
--- ;;
-
--- example v = V.field v
--- ;;
